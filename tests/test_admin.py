@@ -649,7 +649,7 @@ def test_rotate_stop_timeout_restarts_the_service(f):
 
 
 def test_rotate_failed_stop_refuses_without_a_restart(f):
-    """cf-ty4: a stop that fails, or leaves the unit active, refuses and leaves state alone."""
+    """A stop that fails, or leaves the unit active, refuses and leaves state alone."""
     before = f.state.read_bytes()
     marker = f.fake / "fail-stop"
     marker.write_text("")
@@ -667,7 +667,7 @@ def test_rotate_failed_stop_refuses_without_a_restart(f):
 
 
 def test_rotate_unwritable_state_restarts_and_exits_not_live(f):
-    """cf-0fh: an OSError writing the state file restarts the service and exits 2."""
+    """An OSError writing the state file restarts the service and exits 2."""
     if os.geteuid() == 0:
         return  # root writes through a read-only directory
     before = f.state.read_bytes()
