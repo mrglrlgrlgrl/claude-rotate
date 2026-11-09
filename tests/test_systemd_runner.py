@@ -71,6 +71,22 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
                 notifier.notify('READY=1')
             self.assertEqual(receiver.recv(1024), b'READY=1')
 
+    async def test_watchdog_off_without_notify_socket(self):
+        environ = {k: v for k, v in os.environ.items() if k != 'NOTIFY_SOCKET'}
+        environ['WATCHDOG_USEC'] = '300000'
+        with patch.dict(os.environ, environ, clear=True):
+            notifier = runner.SystemdNotifier()
+            self.assertIsNone(notifier.address)
+            self.assertIsNone(notifier.watchdog_interval())
+            with patch.object(runner.socket, 'socket') as make_socket:
+                self.assertIsNone(notifier.notify('READY=1'))
+                make_socket.assert_not_called()
+
+    async def test_watchdog_off_when_usec_zero(self):
+        with patch.dict(os.environ, {'NOTIFY_SOCKET': '/run/unused-notify', 'WATCHDOG_USEC': '0'}):
+            notifier = runner.SystemdNotifier()
+            self.assertIsNone(notifier.watchdog_interval())
+
 
 if __name__ == '__main__':
     unittest.main()
