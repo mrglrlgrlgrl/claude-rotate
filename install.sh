@@ -224,10 +224,12 @@ for stale in "$OPT"/.current.*; do
     [ -L "$stale" ] && rm -f -- "${stale:?}"
 done
 shopt -u nullglob
+switched=0
 if [ "$current_target" != "$release" ]; then
     link_tmp=$(mktemp -u -- "$OPT/.current.XXXXXX")
     ln -s -- "$release" "$link_tmp"
     mv -Tf -- "$link_tmp" "$CURRENT"
+    switched=1
     say "current -> $release"
 fi
 # Verify only once the ExecStart path exists through the current symlink.
@@ -235,6 +237,10 @@ if [ -z "$P" ] && command -v systemd-analyze >/dev/null 2>&1; then
     systemd-analyze verify "$UNIT"
 fi
 systemctl daemon-reload
+# A reload keeps the old code in memory, so a new release needs a restart.
+if [ "$switched" = 1 ] && systemctl is-active --quiet claude-rotate; then
+    systemctl restart claude-rotate
+fi
 
 # --- activation -------------------------------------------------------------------------------
 set +e
