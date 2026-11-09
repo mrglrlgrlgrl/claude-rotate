@@ -803,6 +803,154 @@ def test_add_token_config_write_failure_removes_the_new_token_file(f):
     assert "new" in [a["name"] for a in f.cfg()["accounts"]]
 
 
+def tree_snapshot(f):
+    """The config bytes plus every path under the tokens directory with its content (a symlink by
+    target), so a refusal can be shown to have changed nothing."""
+    files = {}
+    for p in sorted(f.tokens.rglob("*")):
+        rel = str(p.relative_to(f.tokens))
+        if p.is_symlink():
+            files[rel] = ("link", os.readlink(p))
+        elif p.is_file():
+            files[rel] = ("file", p.read_bytes(), mode(p))
+        else:
+            files[rel] = ("dir",)
+    return f.config.read_bytes(), files
+
+
+def test_add_token_refuses_a_new_name_whose_token_path_is_taken(f):
+    taken = f.tokens / "taken.token"
+    taken.write_text("left alone")
+    outside = f.tmp / "elsewhere.token"
+    outside.write_text("elsewhere")
+    link = f.tokens / "linked.token"
+    link.symlink_to(outside)
+    dangling = f.tokens / "dangling.token"
+    dangling.symlink_to(f.tmp / "no-such-file")
+    before = tree_snapshot(f)
+    for name in ("taken", "linked", "dangling"):
+        r = f.run("add-token", name, "--no-restart", input=TOKEN + "\n")
+        assert r.returncode == 1, (name, r)
+        assert f"{f.tokens / (name + '.token')} already exists but no account uses it" in r.stderr, r
+        assert TOKEN not in r.stdout + r.stderr
+        assert tree_snapshot(f) == before, name
+    assert outside.read_text() == "elsewhere"
+    for p in (taken, link, dangling):
+        p.unlink()
+
+
+def test_add_token_refuses_an_existing_account_with_a_token_file_outside_the_tokens_directory(f):
+    original = f.config.read_bytes()
+    outside = f.tmp / "outside.token"
+    outside.write_text("outside")
+    (f.tokens / "sub").mkdir()
+    (f.tokens / "sub" / "nested.token").write_text("nested")
+    real = f.tokens / "real.token"
+    real.write_text("real")
+    (f.tokens / "via-link.token").symlink_to(real)
+    try:
+        for token_file in ("../outside.token", "tokens/sub/nested.token", "tokens/via-link.token", "",
+                           str(outside)):
+            cfg = json.loads(original)
+            cfg["accounts"] = [{"name": "odd", "token_file": token_file}]
+            f.config.write_text(json.dumps(cfg))
+            before = tree_snapshot(f)
+            r = f.run("add-token", "odd", "--no-restart", input=TOKEN + "\n")
+            assert r.returncode == 1, (token_file, r)
+            assert f"account 'odd' uses token_file {token_file!r}, which is not a regular file inside " \
+                   f"{f.tokens}; fix the config first" in r.stderr, (token_file, r)
+            assert TOKEN not in r.stdout + r.stderr
+            assert tree_snapshot(f) == before, token_file
+            assert outside.read_text() == "outside" and real.read_text() == "real"
+    finally:
+        f.config.write_bytes(original)
+        (f.tokens / "via-link.token").unlink()
+        real.unlink()
+        shutil.rmtree(f.tokens / "sub")
+    assert tree_snapshot(f)[0] == original
+
+
+def test_add_token_refuses_a_missing_tokens_directory(f):
+    original = f.config.read_bytes()
+    moved = f.tmp / "tokens-moved"
+    f.tokens.rename(moved)
+    try:
+        r = f.run("add-token", "gone", "--no-restart", input=TOKEN + "\n")
+        assert r.returncode == 1, r
+        assert f"{f.tokens} is missing; run install.sh" in r.stderr, r
+        assert TOKEN not in r.stdout + r.stderr
+        assert not f.tokens.exists(), "the refusal must not recreate the tokens directory"
+        assert f.config.read_bytes() == original
+    finally:
+        moved.rename(f.tokens)
+    assert not (f.tokens / "gone.token").exists()
+
+
+def test_add_token_refuses_a_token_file_that_is_not_a_regular_file(f):
+    directory = f.tmp / "a-directory"
+    directory.mkdir()
+    missing = f.tmp / "missing.token"
+    before = tree_snapshot(f)
+    for source in (directory, missing):
+        r = f.run("add-token", "src", "--token-file", str(source), "--no-restart")
+        assert r.returncode == 1, (source, r)
+        assert f"token file {source} is not a regular file" in r.stderr, r
+        assert tree_snapshot(f) == before, source
+        assert not (f.tokens / "src.token").exists()
+
+
+def test_add_token_from_a_terminal_prints_the_hint_and_hides_the_typed_token(f):
+    import pty
+    import select
+    import signal
+    name = "typed"
+    pid, master = pty.fork()
+    if pid == 0:  # child: stdin, stdout and stderr are the pty's slave side
+        try:
+            os.execve(sys.executable, [sys.executable, "-I", str(ADMIN), "add-token", name, "--no-restart"],
+                      f.env)
+        finally:
+            os._exit(127)
+    captured = b""
+    deadline = time.monotonic() + 30
+    sent = False
+    status = None
+    try:
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([master], [], [], 0.5)
+            if not ready:
+                continue
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:  # EIO: the child closed its side
+                break
+            if not chunk:
+                break
+            captured += chunk
+            # getpass flushes pending input when it disables echo, so type only once it prompts.
+            if not sent and b"input hidden" in captured:
+                os.write(master, TOKEN.encode() + b"\n")
+                sent = True
+        else:
+            raise AssertionError(f"admin did not finish within the timeout: {captured!r}")
+        _, status = os.waitpid(pid, 0)
+    finally:
+        if status is None:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+        os.close(master)
+    text = captured.decode(errors="replace")
+    assert sent and os.WIFEXITED(status) and os.WEXITSTATUS(status) in (0, 3), (os.WEXITSTATUS(status), text)
+    assert "Run `claude setup-token` in a browser session logged into that account." in text, text
+    assert "Paste the sk-ant-oat01-... token here (input hidden): " in text, text
+    assert TOKEN not in text, text
+    token_file = f.tokens / f"{name}.token"
+    assert token_file.read_text() == TOKEN and mode(token_file) == 0o640
+    assert name in [a["name"] for a in f.cfg()["accounts"]]
+    assert f.run("remove-token", name, "--no-restart").returncode in (0, 3)
+    assert not token_file.exists()
+
+
 def test_set_account(f):
     assert f.run("add-token", "sa", "--no-restart", input=TOKEN + "\n").returncode == 0
     assert f.run("add-user", "dev-two", "--no-restart").returncode == 0
@@ -954,6 +1102,11 @@ def main():
              "test_unexpected_errors_are_reported_without_a_traceback",
              "test_unreadable_config_directory_is_reported_as_permission_denied",
              "test_add_token_config_write_failure_removes_the_new_token_file",
+             "test_add_token_refuses_a_new_name_whose_token_path_is_taken",
+             "test_add_token_refuses_an_existing_account_with_a_token_file_outside_the_tokens_directory",
+             "test_add_token_refuses_a_missing_tokens_directory",
+             "test_add_token_refuses_a_token_file_that_is_not_a_regular_file",
+             "test_add_token_from_a_terminal_prints_the_hint_and_hides_the_typed_token",
              "test_set_account", "test_menu"]
     tests = [(n, globals()[n]) for n in order]  # the fixture is built up step by step
     assert sorted(order) == sorted(n for n, g in globals().items() if n.startswith("test_") and callable(g))
