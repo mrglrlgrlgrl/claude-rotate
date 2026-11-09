@@ -882,6 +882,7 @@ those taken from other forks.
 - Built on [clement-z/claude-rotate](https://github.com/clement-z/claude-rotate) by Clément Zrounba up to `56ef19e`, 16 commits, authorship preserved ([compare](https://github.com/clement-z/claude-rotate/compare/19529c6...56ef19e)). Its changes are listed in the groups below, marked `clement-z:`.
 - Merged [doxaras/claude-rotate#4](https://github.com/doxaras/claude-rotate/pull/4) (by Dave Marsden, 9 commits, authorship preserved): `most-weekly-left` and `weekly-pace` rotation strategies, a reserve band above the switch thresholds, and rotation off closed/free accounts (403/404 on `/v1/messages`) with backoff recovery.
 - Took private accounts from kamal/claude-rotate with authorship preserved, leaving out its admin dashboard and join page: `private_to` with per-device rotation pointers, and `--private-to` on `setup.sh add-account` ([kamal 98c5520](https://github.com/kamal/claude-rotate/commit/98c5520), [kamal ca5d02b](https://github.com/kamal/claude-rotate/commit/ca5d02b)).
+- Merged [mrglrlgrlgrl/claude-rotate#1](https://github.com/mrglrlgrlgrl/claude-rotate/pull/1) (by EccentricBlock, 2 commits, authorship preserved): repeated `anthropic-beta` request lines are forwarded comma-joined instead of keeping only the last, and the admin and install preflight tests pass on a host that has the `claude-rotate` account.
 
 **Rotation policy**
 

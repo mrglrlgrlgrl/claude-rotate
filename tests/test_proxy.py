@@ -64,7 +64,9 @@ def use_upstream(handler):
                                  base_url=R.UPSTREAM, timeout=30.0)
 
 
-def call(path="/v1/messages", key="devkey-1", body=None, headers=None, method="POST", raw=None):
+def call(path="/v1/messages", key="devkey-1", body=None, headers=None, method="POST", raw=None,
+         header_lines=None):
+    """header_lines: (name, value) pairs sent as separate field lines, repeats included."""
     async def _go():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=R.app),
                                      base_url="http://proxy", timeout=30.0) as ac:
@@ -72,7 +74,8 @@ def call(path="/v1/messages", key="devkey-1", body=None, headers=None, method="P
             hdrs.update(headers or {})
             content = raw if raw is not None else json.dumps(
                 body or {"model": "claude-opus-5", "messages": []})
-            return await ac.request(method, path, content=content, headers=hdrs)
+            return await ac.request(method, path, content=content,
+                                    headers=list(hdrs.items()) + list(header_lines or []))
     return asyncio.run(_go())
 
 
@@ -98,6 +101,7 @@ def ok_handler(req):
     seen["accept-encoding"] = req.headers.get("accept-encoding")
     seen["x-api-key"] = req.headers.get("x-api-key")
     seen["beta"] = req.headers.get("anthropic-beta")
+    seen["version"] = req.headers.get("anthropic-version")
     # Genuinely gzipped body so the proxy-side httpx auto-decompresses and the
     # stale content-encoding header must be dropped (load-bearing fact #2).
     body = gzip.compress(json.dumps({"usage": {"input_tokens": 7, "output_tokens": 3}}).encode())
@@ -113,6 +117,15 @@ check("device key swapped for account token", seen["auth"] == "Bearer tok-a")
 check("accept-encoding forced to identity", seen["accept-encoding"] == "identity")
 check("x-api-key stripped", seen["x-api-key"] is None)
 check("client anthropic-beta preserved", seen["beta"] == "oauth-2025-04-20")
+# Regression: a dict of request headers kept only the last repeated line.
+call(header_lines=[("anthropic-beta", "oauth-2025-04-20"),
+                   ("anthropic-beta", "extended-cache-ttl-2025-04-11")])
+check("repeated anthropic-beta lines are all forwarded, in order",
+      seen["beta"] == "oauth-2025-04-20, extended-cache-ttl-2025-04-11")
+call(header_lines=[("authorization", "Bearer second-client-token")])
+check("repeated authorization lines still end as the account token", seen["auth"] == "Bearer tok-a")
+call(header_lines=[("anthropic-version", "2023-06-01"), ("anthropic-version", "2023-06-02")])
+check("other repeated lines stay last-wins, not comma-joined", seen["version"] == "2023-06-02")
 check("content-encoding dropped from response", "content-encoding" not in r.headers)
 check("state updated from unified headers",
       R.STATE["accounts"]["a"]["util_5h"] == 0.5 and R.STATE["accounts"]["a"]["util_7d"] == 0.2)

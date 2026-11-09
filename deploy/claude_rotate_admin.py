@@ -82,12 +82,13 @@ def require_root():
 
 
 def service_ids():
-    """(uid, gid) of the service identity; falls back to the caller under the test prefix."""
+    """(uid, gid) of the service identity. Under the test prefix a non-root caller uses its
+    own ids, so a service account on the host is never chowned to."""
+    if PREFIX and os.geteuid() != 0:
+        return os.getuid(), os.getgid()
     try:
         return pwd.getpwnam(SERVICE_USER).pw_uid, grp.getgrnam(SERVICE_GROUP).gr_gid
     except KeyError:
-        if PREFIX and os.geteuid() != 0:
-            return os.getuid(), os.getgid()
         raise Refused(f"service identity '{SERVICE_USER}' is missing; run install.sh first")
 
 

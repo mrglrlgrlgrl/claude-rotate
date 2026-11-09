@@ -37,10 +37,11 @@ def case(name, setup, expect_refusal, needle):
         fakebin = t / "bin"
         for d in (prefix / "opt/claude-rotate/releases", prefix / "etc/systemd/system", prefix / "usr/local/sbin", fakebin):
             d.mkdir(parents=True)
-        # An identity lookup that fails stops the script right after preflight on this host,
-        # which is enough to show that preflight itself passed.
-        for tool in ("systemctl", "systemd-analyze", "adduser", "apt-get"):
-            (fakebin / tool).write_text("#!/bin/sh\nexit 0\n")
+        # A getent stub that finds no account stops the script right after preflight, even on a
+        # host that has a real claude-rotate user, which is enough to show that preflight passed.
+        for tool, status in (("systemctl", 0), ("systemd-analyze", 0), ("adduser", 0),
+                             ("apt-get", 0), ("getent", 2)):
+            (fakebin / tool).write_text(f"#!/bin/sh\nexit {status}\n")
             (fakebin / tool).chmod(0o700)
         setup(prefix, t)
         before = snapshot(prefix)
@@ -102,7 +103,7 @@ def main():
             (prefix / "etc/systemd/system/claude-rotate.service").write_text(UNIT_LINE)
             (prefix / "usr/local/sbin/claude-rotate-admin").write_text("#!/bin/sh\n" + MARKER)
             (prefix / "opt/claude-rotate/current").symlink_to(str(prefix / "opt/claude-rotate/releases/aaaabbbbcccc"))
-        # Preflight passes; the run stops later because this host has no claude-rotate identity.
+        # Preflight passes; the run stops later because the getent stub reports no claude-rotate identity.
         case("well-formed-layout-passes-preflight", well_formed, False, "group claude-rotate is missing")
         assert (outside / "sentinel").read_text() == "do not touch"
     finally:

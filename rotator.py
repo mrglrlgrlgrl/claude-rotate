@@ -2018,9 +2018,15 @@ async def proxy(request: Request, path: str):
             status_code=401)
 
     body = await bounded_body(request)
-    fwd_headers = {k: v for k, v in request.headers.items()
-                   if k.lower() not in HOP | PRIVATE_HEADERS
-                   and not k.lower().startswith(("tailscale-", "x-forwarded-", "sec-fetch-"))}
+    # anthropic-beta is a comma list that a client or hop may split across field
+    # lines (RFC 9110 5.3). A plain dict keeps only the last line and would drop
+    # betas such as extended cache TTL, so join it. Other repeats stay last-wins.
+    fwd_headers: dict = {}
+    for k, v in request.headers.items():
+        k = k.lower()
+        if k in HOP | PRIVATE_HEADERS or k.startswith(("tailscale-", "x-forwarded-", "sec-fetch-")):
+            continue
+        fwd_headers[k] = f"{fwd_headers[k]}, {v}" if k == "anthropic-beta" and k in fwd_headers else v
     fwd_headers["accept-encoding"] = "identity"
     fwd_headers.pop("x-api-key", None)
 

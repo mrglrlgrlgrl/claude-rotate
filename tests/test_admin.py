@@ -143,6 +143,28 @@ def mode(path):
     return stat.S_IMODE(os.lstat(path).st_mode)
 
 
+def test_prefix_keeps_the_callers_ids_even_if_the_host_has_the_service_account(f):
+    """Regression: a host with a real claude-rotate user made a non-root test run chown to it."""
+    if os.geteuid() == 0:
+        return  # root uses the real identity by design
+    import importlib.util
+    import types
+    old = os.environ.get("CLAUDE_ROTATE_PREFIX")
+    os.environ["CLAUDE_ROTATE_PREFIX"] = str(f.prefix)
+    try:
+        spec = importlib.util.spec_from_file_location("admin_under_test", ADMIN)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    finally:
+        if old is None:
+            os.environ.pop("CLAUDE_ROTATE_PREFIX")
+        else:
+            os.environ["CLAUDE_ROTATE_PREFIX"] = old
+    mod.pwd = types.SimpleNamespace(getpwnam=lambda name: types.SimpleNamespace(pw_uid=os.getuid() + 1))
+    mod.grp = types.SimpleNamespace(getgrnam=lambda name: types.SimpleNamespace(gr_gid=os.getgid() + 1))
+    assert mod.service_ids() == (os.getuid(), os.getgid()), mod.service_ids()
+
+
 def test_init_creates_empty_config_and_modes(f):
     r = f.run("init")
     assert r.returncode == 3, r
@@ -763,7 +785,8 @@ def test_menu(f):
 
 def main():
     f = Fixture()
-    order = ["test_init_creates_empty_config_and_modes", "test_invalid_names_do_nothing",
+    order = ["test_prefix_keeps_the_callers_ids_even_if_the_host_has_the_service_account",
+             "test_init_creates_empty_config_and_modes", "test_invalid_names_do_nothing",
              "test_add_token_and_renewal", "test_add_user_activation_and_duplicates",
              "test_private_to_flag_and_device_removal_guard", "test_readiness_needs_enabled_nonempty_token", "test_inherited_lock_descriptor",
              "test_restart_failure_is_reported", "test_concurrent_add_users_are_serialized",
