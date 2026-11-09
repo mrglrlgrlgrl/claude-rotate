@@ -1386,6 +1386,12 @@ def main(argv=None) -> int:
     except PermissionError as exc:
         err(f"error: permission denied: {exc}")
         return EXIT_REFUSED
+    except subprocess.TimeoutExpired as exc:
+        err(f"error: {exc}; the change may be stored but is not confirmed live")
+        return EXIT_NOT_LIVE
+    except (OSError, ValueError) as exc:
+        err(f"error: {exc}")
+        return EXIT_REFUSED
 
 
 if __name__ == "__main__":

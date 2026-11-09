@@ -738,6 +738,48 @@ def test_set_url_and_symlinked_config(f):
         f.config.write_bytes(real)
 
 
+def test_unexpected_errors_are_reported_without_a_traceback(f):
+    """main() turns an unexpected exception into one `error:` line, never a traceback."""
+    r = f.run("set-url", "http://[x")
+    assert r.returncode == 1 and r.stderr.startswith("error:") and "Traceback" not in r.stderr, r
+    assert len(r.stderr.strip().splitlines()) == 1, r
+    before = sorted(p.name for p in f.tokens.iterdir())
+    bad = f.tmp / "binary.token"
+    bad.write_bytes(b"\xff\xfe")
+    r = f.run("add-token", "binary-acct", "--token-file", str(bad), "--no-restart")
+    assert r.returncode == 1 and r.stderr.startswith("error:") and "Traceback" not in r.stderr, r
+    assert len(r.stderr.strip().splitlines()) == 1, r
+    assert sorted(p.name for p in f.tokens.iterdir()) == before
+    assert not (f.tokens / "binary-acct.token").exists()
+    # A bare run prints the usage and exits 1.
+    r = f.run()
+    assert r.returncode == 1 and r.stdout.startswith("usage:"), r
+    # A timeout is stored-but-not-confirmed (2); other OS and value errors are refusals (1).
+    with admin_in_process(f) as mod:
+        for exc, want_rc, want_text in (
+                (subprocess.TimeoutExpired(["systemctl"], 5), 2, "not confirmed live"),
+                (OSError(28, "No space left on device"), 1, "No space left on device"),
+                (ValueError("bad value"), 1, "bad value")):
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with mock.patch.object(mod, "cmd_check", mock.Mock(side_effect=exc)), \
+                    contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                rc = mod.main(["check"])
+            assert rc == want_rc, (exc, rc, stderr.getvalue())
+            assert stderr.getvalue().startswith("error:") and want_text in stderr.getvalue(), stderr.getvalue()
+
+
+def test_unreadable_config_directory_is_reported_as_permission_denied(f):
+    if os.geteuid() == 0:
+        print("skip test_unreadable_config_directory_is_reported_as_permission_denied: mode 000 has no effect as root")
+        return
+    f.etc.chmod(0)
+    try:
+        r = f.run("check")
+    finally:
+        f.etc.chmod(0o750)
+    assert r.returncode == 1 and r.stderr.startswith("error: permission denied:") and "Traceback" not in r.stderr, r
+
+
 def test_set_account(f):
     assert f.run("add-token", "sa", "--no-restart", input=TOKEN + "\n").returncode == 0
     assert f.run("add-user", "dev-two", "--no-restart").returncode == 0
@@ -886,6 +928,8 @@ def main():
              "test_rotate_stop_timeout_restarts_the_service", "test_rotate_failed_stop_refuses_without_a_restart",
              "test_rotate_unwritable_state_restarts_and_exits_not_live",
              "test_remove_token_and_setup_needed", "test_set_url_and_symlinked_config",
+             "test_unexpected_errors_are_reported_without_a_traceback",
+             "test_unreadable_config_directory_is_reported_as_permission_denied",
              "test_set_account", "test_menu"]
     tests = [(n, globals()[n]) for n in order]  # the fixture is built up step by step
     assert sorted(order) == sorted(n for n, g in globals().items() if n.startswith("test_") and callable(g))
