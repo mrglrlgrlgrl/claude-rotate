@@ -659,8 +659,14 @@ def store_token(args, token: str) -> int:
             acct = {"name": args.name, "token_file": f"tokens/{args.name}.token"}
             if args.private_to is not None:
                 set_private(acct, args.private_to)
-            cfg["accounts"].append(acct)
-            write_config(cfg)
+            try:
+                cfg["accounts"].append(acct)
+                write_config(cfg)
+            except BaseException:
+                # The config never named the account, so drop the file: a retry would
+                # otherwise be refused as "already exists but no account uses it".
+                path.unlink(missing_ok=True)
+                raise
             out(f"account '{args.name}' added ({path})")
             what = f"account '{args.name}'"
         return activate(cfg, restart=not args.no_restart, what=what)

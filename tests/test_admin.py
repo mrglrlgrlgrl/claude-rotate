@@ -780,6 +780,29 @@ def test_unreadable_config_directory_is_reported_as_permission_denied(f):
     assert r.returncode == 1 and r.stderr.startswith("error: permission denied:") and "Traceback" not in r.stderr, r
 
 
+def test_add_token_config_write_failure_removes_the_new_token_file(f):
+    """A failed config write leaves no token file behind, so the same add-token can be retried."""
+    if os.geteuid() == 0:
+        print("skip test_add_token_config_write_failure_removes_the_new_token_file: "
+              "a read-only directory has no effect as root")
+        return
+    before = f.config.read_bytes()
+    etc_mode = mode(f.etc)
+    f.etc.chmod(0o550)  # tokens/ stays writable; the config's temp file in etc cannot be created
+    try:
+        r = f.run("add-token", "new", "--no-restart", input=TOKEN + "\n")
+    finally:
+        f.etc.chmod(etc_mode)
+    assert r.returncode == 1 and r.stderr.startswith("error:") and "ermission" in r.stderr, r
+    assert "Traceback" not in r.stderr, r
+    assert not (f.tokens / "new.token").exists()
+    assert f.config.read_bytes() == before
+    r = f.run("add-token", "new", "--no-restart", input=TOKEN + "\n")
+    assert r.returncode == 0 and "already exists" not in r.stderr, r
+    assert (f.tokens / "new.token").exists()
+    assert "new" in [a["name"] for a in f.cfg()["accounts"]]
+
+
 def test_set_account(f):
     assert f.run("add-token", "sa", "--no-restart", input=TOKEN + "\n").returncode == 0
     assert f.run("add-user", "dev-two", "--no-restart").returncode == 0
@@ -930,6 +953,7 @@ def main():
              "test_remove_token_and_setup_needed", "test_set_url_and_symlinked_config",
              "test_unexpected_errors_are_reported_without_a_traceback",
              "test_unreadable_config_directory_is_reported_as_permission_denied",
+             "test_add_token_config_write_failure_removes_the_new_token_file",
              "test_set_account", "test_menu"]
     tests = [(n, globals()[n]) for n in order]  # the fixture is built up step by step
     assert sorted(order) == sorted(n for n, g in globals().items() if n.startswith("test_") and callable(g))
