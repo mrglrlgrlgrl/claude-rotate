@@ -951,6 +951,104 @@ def test_add_token_from_a_terminal_prints_the_hint_and_hides_the_typed_token(f):
     assert not token_file.exists()
 
 
+def test_check_refuses_a_bad_config_and_changes_nothing(f):
+    good, good_mode = f.config.read_bytes(), mode(f.config)
+    try:
+        # (config text, expected refusal text)
+        cases = [
+            (None, f"{f.config} does not exist; run install.sh"),
+            ("{not json", f"{f.config} is not valid JSON ("),
+            ("[]", f"{f.config} must contain a JSON object"),
+            ("3", f"{f.config} must contain a JSON object"),
+            ('{"accounts": "x"}', "config 'accounts' must be a list of objects"),
+            ('{"accounts": ["x"]}', "config 'accounts' must be a list of objects"),
+            ('{"accounts": [{"name": 1, "token_file": "a"}]}', "config 'accounts' must be a list of objects"),
+            ('{"accounts": [{"name": "a"}]}', "config 'accounts' must be a list of objects"),
+            ('{"accounts": [{"name": "a", "token_file": 2}]}', "config 'accounts' must be a list of objects"),
+            ('{"devices": []}', "config 'devices' must be an object"),
+            ('{"devices": "x"}', "config 'devices' must be an object"),
+            ('{"accounts": [{"name": "a", "token_file": "a.token"}, {"name": "a", "token_file": "b.token"}]}',
+             "config 'accounts' has duplicate names"),
+        ]
+        for text, want in cases:
+            if text is None:
+                f.config.unlink()
+            else:
+                f.config.write_text(text)
+            before = tree_snapshot(f) if text is not None else sorted(f.etc.rglob("*"))
+            r = f.run("check")
+            assert r.returncode == 1, (text, r)
+            assert r.stderr.startswith("error: ") and want in r.stderr, (text, r)
+            assert r.stdout == "", (text, r)
+            assert (tree_snapshot(f) if text is not None else sorted(f.etc.rglob("*"))) == before, text
+        # The parser error is passed on, not swallowed.
+        f.config.write_text("{not json")
+        assert "Expecting property name" in f.run("check").stderr
+    finally:
+        f.config.write_bytes(good)
+        f.config.chmod(good_mode)
+
+
+def test_refuses_without_root_or_a_prefix(f):
+    if os.geteuid() == 0:
+        print("skip test_refuses_without_root_or_a_prefix: running as root would act on the real /etc")
+        return
+    env = {k: v for k, v in f.env.items() if k != "CLAUDE_ROTATE_PREFIX"}
+    before = tree_snapshot(f)
+    f.reset_calls()
+    r = f.run("check", env=env)
+    assert r.returncode == 1, r
+    assert r.stderr == "error: claude-rotate-admin must run as root: sudo claude-rotate-admin ...\n", r
+    assert r.stdout == "", r
+    assert tree_snapshot(f) == before
+    assert f.calls() == []
+
+
+def test_service_identity_missing_is_refused_in_process(f):
+    with admin_in_process(f) as mod:
+        found = mock.Mock(pw_uid=1, gr_gid=1)
+        for gone, bad, fine in (("user", "pwd.getpwnam", "grp.getgrnam"),
+                                ("group", "grp.getgrnam", "pwd.getpwnam")):
+            with mock.patch.object(mod.os, "geteuid", return_value=0), \
+                    mock.patch(bad, side_effect=KeyError("claude-rotate")), \
+                    mock.patch(fine, return_value=found):
+                try:
+                    mod.service_ids()
+                except mod.Refused as exc:
+                    assert "service identity 'claude-rotate' is missing; run install.sh first" in str(exc), exc
+                else:
+                    raise AssertionError(f"service_ids did not refuse a missing {gone}")
+        # No prefix and a non-root caller reaches the same lookup.
+        with mock.patch.object(mod, "PREFIX", ""), mock.patch.object(mod.os, "geteuid", return_value=1000), \
+                mock.patch("pwd.getpwnam", side_effect=KeyError("claude-rotate")):
+            try:
+                mod.service_ids()
+            except mod.Refused as exc:
+                assert "service identity" in str(exc), exc
+            else:
+                raise AssertionError("service_ids did not refuse without a prefix")
+
+
+def test_symlinked_ancestor_of_a_managed_path_is_refused(f):
+    real = f.prefix / "var-real"
+    (f.prefix / "var").rename(real)
+    (f.prefix / "var").symlink_to(real)
+    try:
+        before = tree_snapshot(f)
+        state_before = sorted(p.name for p in real.rglob("*"))
+        f.reset_calls()
+        r = f.run("activate")
+        assert r.returncode == 1, r
+        assert r.stderr.startswith("error: ") and "is a symbolic link; refusing to operate through it" in r.stderr, r
+        assert str(f.prefix / "var") in r.stderr, r
+        assert tree_snapshot(f) == before
+        assert sorted(p.name for p in real.rglob("*")) == state_before
+        assert f.calls() == []
+    finally:
+        (f.prefix / "var").unlink()
+        real.rename(f.prefix / "var")
+
+
 def test_set_account(f):
     assert f.run("add-token", "sa", "--no-restart", input=TOKEN + "\n").returncode == 0
     assert f.run("add-user", "dev-two", "--no-restart").returncode == 0
@@ -1107,6 +1205,9 @@ def main():
              "test_add_token_refuses_a_missing_tokens_directory",
              "test_add_token_refuses_a_token_file_that_is_not_a_regular_file",
              "test_add_token_from_a_terminal_prints_the_hint_and_hides_the_typed_token",
+             "test_check_refuses_a_bad_config_and_changes_nothing", "test_refuses_without_root_or_a_prefix",
+             "test_service_identity_missing_is_refused_in_process",
+             "test_symlinked_ancestor_of_a_managed_path_is_refused",
              "test_set_account", "test_menu"]
     tests = [(n, globals()[n]) for n in order]  # the fixture is built up step by step
     assert sorted(order) == sorted(n for n, g in globals().items() if n.startswith("test_") and callable(g))
