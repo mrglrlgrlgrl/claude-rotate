@@ -5,10 +5,10 @@ from pathlib import Path
 
 failed = []
 for f in sorted(Path(__file__).parent.glob("test_*.py")):
-    print(f"=== {f.name} ===")
+    print(f"=== {f.name} ===", flush=True)
     if subprocess.run([sys.executable, str(f)]).returncode != 0:
         failed.append(f.name)
-    print()
+    print(flush=True)
 
 if failed:
     sys.exit(f"FAILED: {', '.join(failed)}")
