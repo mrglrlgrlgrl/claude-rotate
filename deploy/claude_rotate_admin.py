@@ -233,7 +233,11 @@ def inside_tokens_dir(path: Path) -> bool:
 
 def load_config() -> dict:
     refuse_symlink(CONFIG, "config")
-    if not CONFIG.is_file():
+    try:
+        is_regular = stat.S_ISREG(CONFIG.stat().st_mode)
+    except FileNotFoundError:
+        is_regular = False
+    if not is_regular:
         raise Refused(f"{CONFIG} does not exist; run install.sh (or claude-rotate-admin init)")
     try:
         cfg = json.loads(CONFIG.read_text())
