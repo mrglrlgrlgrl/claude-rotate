@@ -886,18 +886,6 @@ def cmd_rotate(args) -> int:
             return EXIT_OK
         managed = systemctl_available() and unit_installed()
         stopped_by_us = False
-        if managed:
-            before = active_state()
-            if before not in QUIESCENT:
-                # Any state but inactive/failed (including activating/auto-restart) can
-                # start a process that would overwrite the file we are about to write.
-                stopped = systemctl("stop", UNIT_NAME, timeout=120)
-                stopped_by_us = True
-                after = active_state()
-                if stopped.returncode != 0 or after not in QUIESCENT:
-                    detail = (stopped.stderr or stopped.stdout).strip()
-                    raise Refused(f"could not bring {UNIT_NAME} to a stopped state (was {before}, now {after}"
-                                  + (f": {detail}" if detail else "") + "); rotation state unchanged")
 
         def restore():
             if not stopped_by_us:
@@ -906,6 +894,25 @@ def cmd_rotate(args) -> int:
             if started.returncode == 0 and active_state() == "active":
                 return "service started again"
             return f"service start FAILED; {journal_hint()}"
+
+        if managed:
+            before = active_state()
+            if before not in QUIESCENT:
+                # Any state but inactive/failed (including activating/auto-restart) can
+                # start a process that would overwrite the file we are about to write.
+                try:
+                    stopped = systemctl("stop", UNIT_NAME, timeout=120)
+                except subprocess.TimeoutExpired:
+                    # The stop may still be in progress: start the service again.
+                    stopped_by_us = True
+                    raise Refused(f"could not stop {UNIT_NAME} within 120 s (was {before}); "
+                                  f"rotation state unchanged ({restore()})")
+                stopped_by_us = True
+                after = active_state()
+                if stopped.returncode != 0 or after not in QUIESCENT:
+                    detail = (stopped.stderr or stopped.stdout).strip()
+                    raise Refused(f"could not bring {UNIT_NAME} to a stopped state (was {before}, now {after}"
+                                  + (f": {detail}" if detail else "") + "); rotation state unchanged")
 
         try:
             # The shutdown drain may have saved newer state: decide again from the file.

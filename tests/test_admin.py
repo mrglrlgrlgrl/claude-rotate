@@ -6,7 +6,10 @@ Nothing here touches /etc, /opt, /var or a real service: CLAUDE_ROTATE_PREFIX po
 every managed path into a temporary directory and a recording systemctl stub is
 first on PATH.
 """
+import contextlib
 import http.server
+import importlib.util
+import io
 import json
 import os
 import shutil
@@ -18,6 +21,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 ADMIN = ROOT / "deploy" / "claude_rotate_admin.py"
@@ -163,6 +167,26 @@ def test_prefix_keeps_the_callers_ids_even_if_the_host_has_the_service_account(f
     mod.pwd = types.SimpleNamespace(getpwnam=lambda name: types.SimpleNamespace(pw_uid=os.getuid() + 1))
     mod.grp = types.SimpleNamespace(getgrnam=lambda name: types.SimpleNamespace(gr_gid=os.getgid() + 1))
     assert mod.service_ids() == (os.getuid(), os.getgid()), mod.service_ids()
+
+
+@contextlib.contextmanager
+def admin_in_process(f):
+    """Import the admin under the fixture's prefix and fake systemctl, for code the subprocess
+    runs cannot reach (a fixed timeout). Yields the module; the environment is put back after."""
+    keys = ("CLAUDE_ROTATE_PREFIX", "FAKE_SYSTEMD_DIR", "PATH")
+    old = {k: os.environ.get(k) for k in keys}
+    os.environ.update({k: f.env[k] for k in keys})
+    try:
+        spec = importlib.util.spec_from_file_location("admin_in_process", ADMIN)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        yield mod
+    finally:
+        for k, v in old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def test_init_creates_empty_config_and_modes(f):
@@ -599,6 +623,72 @@ def test_rotate_switches_after_stop_and_preserves_state(f):
     assert json.loads(f.state.read_text())["accounts"].keys() >= {"acct-1", "acct-2"}
 
 
+def test_rotate_stop_timeout_restarts_the_service(f):
+    write_state(f, {"active_account": "acct-1", "accounts": {}, "events": []})
+    before = f.state.read_bytes()
+    f.set_active(True)
+    f.reset_calls()
+    with admin_in_process(f) as mod:
+        real = mod.systemctl
+
+        def timing_out(*args, **kwargs):
+            result = real(*args, **kwargs)  # the fake records and performs the stop
+            if args[0] == "stop":
+                raise subprocess.TimeoutExpired(["systemctl", *args], kwargs.get("timeout"))
+            return result
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(mod, "systemctl", timing_out), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = mod.main(["rotate"])
+    assert rc == 1, (rc, stdout.getvalue(), stderr.getvalue())
+    assert "within 120 s" in stderr.getvalue() and "service started again" in stderr.getvalue(), stderr.getvalue()
+    calls = f.calls()
+    assert calls.index("stop claude-rotate.service") < calls.index("start claude-rotate.service"), calls
+    assert f.state.read_bytes() == before
+
+
+def test_rotate_failed_stop_refuses_without_a_restart(f):
+    """cf-ty4: a stop that fails, or leaves the unit active, refuses and leaves state alone."""
+    before = f.state.read_bytes()
+    marker = f.fake / "fail-stop"
+    marker.write_text("")
+    try:
+        f.set_active(True)
+        f.reset_calls()
+        r = f.run("rotate")
+        assert r.returncode == 1, r
+        assert "could not bring claude-rotate.service to a stopped state (was active, now active" in r.stderr, r
+        assert "rotation state unchanged" in r.stderr
+        assert not any(c.startswith("start") for c in f.calls()), f.calls()
+        assert f.state.read_bytes() == before
+    finally:
+        marker.unlink()
+
+
+def test_rotate_unwritable_state_restarts_and_exits_not_live(f):
+    """cf-0fh: an OSError writing the state file restarts the service and exits 2."""
+    if os.geteuid() == 0:
+        return  # root writes through a read-only directory
+    before = f.state.read_bytes()
+    hook = f.fake / "on-stop"
+    hook.write_text(f"#!/bin/sh\nchmod 500 {str(f.state_dir)!r}\n")
+    hook.chmod(0o700)
+    try:
+        f.set_active(True)
+        f.reset_calls()
+        r = f.run("rotate")
+    finally:
+        f.state_dir.chmod(0o700)
+        hook.unlink()
+    assert r.returncode == 2, r
+    assert "could not write" in r.stdout and "active account unchanged" in r.stdout, r
+    assert "service started again" in r.stdout
+    calls = f.calls()
+    assert calls.index("stop claude-rotate.service") < calls.index("start claude-rotate.service"), calls
+    assert f.state.read_bytes() == before
+
+
 def test_remove_token_and_setup_needed(f):
     cfg = f.cfg()
     cfg["accounts"] = [a for a in cfg["accounts"] if a["name"] in ("acct-1", "acct-2")]
@@ -793,6 +883,8 @@ def main():
              "test_status_has_no_secrets", "test_status_live_query_uses_header",
              "test_reload_is_confirmed_through_status",
              "test_rotate_rejections_do_not_mutate", "test_rotate_switches_after_stop_and_preserves_state",
+             "test_rotate_stop_timeout_restarts_the_service", "test_rotate_failed_stop_refuses_without_a_restart",
+             "test_rotate_unwritable_state_restarts_and_exits_not_live",
              "test_remove_token_and_setup_needed", "test_set_url_and_symlinked_config",
              "test_set_account", "test_menu"]
     tests = [(n, globals()[n]) for n in order]  # the fixture is built up step by step
