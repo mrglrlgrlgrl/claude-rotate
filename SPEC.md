@@ -69,8 +69,8 @@ true when you change `rotator.py`.
 
 `tests/run_all.py` runs every test file against a fixture config. `tests.yml`
 runs it on Python 3.10, 3.12 and 3.14 for each pull request and each push to a
-branch other than `main`, and `image.yml` runs it before it publishes an image. The fixture steps are in `AGENTS.md` under
-"Build and test".
+branch other than `main`, and `image.yml` runs it before it publishes an
+image. The fixture steps are in `AGENTS.md` under "Build and test".
 
 ## 6. Acceptance criteria
 
