@@ -1327,6 +1327,58 @@ def test_add_user_removes_placeholder_devices_and_names_each(f):
         assert "REPLACE-WITH" not in f.config.read_text()
 
 
+def test_init_on_a_complete_configuration_reports_it_complete(f):
+    with config_and_tokens_restored(f):
+        ready_config(f)
+        r = f.run("init")
+        assert r.returncode == 0, r
+        assert r.stdout.splitlines() == [f"adopted existing {f.config}", "configuration complete"], r
+        assert r.stderr == ""
+        assert f.cfg()["devices"] == {"good": "dev-good-0123456789abcdef"}
+
+
+def test_init_without_a_config_or_an_example_refuses(f):
+    # A copy of the admin whose sibling config.example.json does not exist.
+    bare = f.tmp / "no-example" / "deploy"
+    bare.mkdir(parents=True)
+    copy = bare / "claude_rotate_admin.py"
+    shutil.copy(ADMIN, copy)
+    with config_and_tokens_restored(f):
+        f.config.unlink()
+        r = subprocess.run([sys.executable, "-I", str(copy), "init"], env=f.env, text=True,
+                           capture_output=True, timeout=60)
+        missing = copy.parent.parent / "config.example.json"
+        assert not missing.exists()
+        assert r.returncode == 1, r
+        assert r.stderr == f"error: {missing} is missing; cannot create a default configuration\n", r
+        assert r.stdout == "", r
+        assert not f.config.exists()
+
+
+def test_init_sets_token_modes_and_leaves_symbolic_links_alone(f):
+    with config_and_tokens_restored(f):
+        ready_config(f)
+        plain = f.tokens / "plain.token"
+        plain.write_text(TOKEN)
+        plain.chmod(0o600)
+        target = f.tmp / "link-target"
+        target.write_text("target")
+        target.chmod(0o600)
+        link = f.tokens / "linked.token"
+        link.symlink_to(target)
+        r = f.run("init")
+        assert r.returncode == 0 and "configuration complete" in r.stdout, r
+        # (3) A regular file is 0640 and owned by the service identity (the caller under a prefix).
+        assert mode(plain) == 0o640 and plain.read_text() == TOKEN
+        st = os.lstat(plain)
+        assert (st.st_uid, st.st_gid) == (os.getuid(), os.getgid())
+        # (4) A symbolic link is reported and left alone, and so is what it points at.
+        assert f"warning: {link} is a symbolic link; left unchanged" in r.stdout.splitlines(), r
+        assert link.is_symlink() and os.readlink(link) == str(target)
+        assert mode(target) == 0o600 and target.read_text() == "target"
+        assert f"{plain} is a symbolic link" not in r.stdout
+
+
 def main():
     f = Fixture()
     order = ["test_prefix_keeps_the_callers_ids_even_if_the_host_has_the_service_account",
@@ -1355,7 +1407,10 @@ def main():
              "test_inherited_lock_descriptor_is_reused_and_kept_by_a_locking_command",
              "test_inherited_lock_descriptor_that_the_caller_does_not_hold_is_refused",
              "test_readiness_reports_each_problem_through_check",
-             "test_add_user_removes_placeholder_devices_and_names_each"]
+             "test_add_user_removes_placeholder_devices_and_names_each",
+             "test_init_on_a_complete_configuration_reports_it_complete",
+             "test_init_without_a_config_or_an_example_refuses",
+             "test_init_sets_token_modes_and_leaves_symbolic_links_alone"]
     tests = [(n, globals()[n]) for n in order]  # the fixture is built up step by step
     assert sorted(order) == sorted(n for n, g in globals().items() if n.startswith("test_") and callable(g))
     try:
