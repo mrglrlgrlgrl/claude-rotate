@@ -1379,6 +1379,112 @@ def test_init_sets_token_modes_and_leaves_symbolic_links_alone(f):
         assert f"{plain} is a symbolic link" not in r.stdout
 
 
+@contextlib.contextmanager
+def state_restored(f):
+    """Leave the state file (bytes) and, if it was absent, the state directory as they were."""
+    dir_existed = f.state_dir.exists()
+    data = f.state.read_bytes() if f.state.exists() else None
+    try:
+        yield
+    finally:
+        if not dir_existed:
+            shutil.rmtree(f.state_dir, ignore_errors=True)
+        elif data is None:
+            f.state.unlink(missing_ok=True)
+        else:
+            f.state.write_bytes(data)
+
+
+def rotate_config(f, *names, empty=()):
+    """Two or more enabled accounts, `ready` first (the default active one), with default thresholds.
+    Each name in `names` gets a token file; the ones in `empty` get a zero-byte one."""
+    ready_config(f, accounts=[{"name": n, "token_file": f"tokens/{n}.token"} for n in names])
+    for n in names:
+        (f.tokens / f"{n}.token").write_bytes(b"" if n in empty else TOKEN.encode())
+    cfg = f.cfg()
+    cfg["switch_threshold"], cfg["switch_threshold_7d"] = 0.8, 0.98
+    f.config.write_text(json.dumps(cfg))
+
+
+def test_rotate_refuses_each_ineligible_target_with_its_reason_and_keeps_state(f):
+    with config_and_tokens_restored(f), state_restored(f):
+        rotate_config(f, "empty", "weekly", "other", empty=("empty",))
+        far = time.time() + 3600
+        write_state(f, {"active_account": "ready", "custom": "keep", "events": [],
+                        "accounts": {"weekly": {"util_5h": 0.1, "util_7d": 0.98, "reset_7d": far}}})
+        f.set_active(True)
+        f.reset_calls()
+        # (target, the whole refusal, which holds the one reason)
+        cases = (("ghost", "error: account 'ghost' is not in the configuration; nothing changed\n"),
+                 ("empty", "error: account 'empty' cannot be made active: token file is empty; nothing changed\n"),
+                 ("weekly", "error: account 'weekly' cannot be made active: "
+                            "7d window at 98% (threshold 98%); nothing changed\n"))
+        for present in (True, False):
+            if not present:
+                f.state.unlink()
+            for target, message in cases if present else cases[:2]:  # the 7d figure lives in the file
+                r = f.run("rotate", target)
+                assert r.returncode == 1 and r.stdout == "" and r.stderr == message, (target, present, r)
+                assert f.state.exists() is present, (target, present)
+            if present:
+                assert json.loads(f.state.read_text())["custom"] == "keep"
+        # A state file that is not valid JSON is refused, with the way out; one that is not an object too.
+        for text, want in (("{not json", "is not valid JSON ("), ("[1]", "must contain a JSON object")):
+            f.state.write_text(text)
+            r = f.run("rotate", "other")
+            assert r.returncode == 1 and r.stdout == "" and r.stderr.startswith(f"error: {f.state} "), (text, r)
+            assert want in r.stderr, (text, r)
+            if text == "{not json":
+                assert "Stop the service and move the file aside to reset rotation state" in r.stderr, r
+            assert f.state.read_text() == text
+        assert f.calls() == []  # never stopped the service for a refusal
+
+
+def test_rotate_counts_a_passed_reset_as_zero_utilisation(f):
+    with config_and_tokens_restored(f), state_restored(f):
+        rotate_config(f, "other")
+        f.set_active(False)
+        past, future = time.time() - 60, time.time() + 3600
+
+        def state_with(reset_5h, reset_7d):
+            write_state(f, {"active_account": "ready", "events": [], "accounts": {
+                "other": {"util_5h": 0.95, "util_7d": 0.99, "reset_5h": reset_5h, "reset_7d": reset_7d}}})
+
+        # Over both thresholds with a window still open: refused for that window only.
+        for reset_5h, reset_7d, reason, absent in (
+                (future, past, "5h window at 95% (threshold 80%)", "7d window"),
+                (past, future, "7d window at 99% (threshold 98%)", "5h window")):
+            state_with(reset_5h, reset_7d)
+            before = f.state.read_bytes()
+            r = f.run("rotate", "other")
+            assert r.returncode == 1 and reason in r.stderr and absent not in r.stderr, r
+            assert f.state.read_bytes() == before
+        # Both resets passed: the same figures count as zero and the account is eligible.
+        state_with(past, past)
+        r = f.run("rotate", "other")
+        assert r.returncode == 0 and "active account set to 'other' (was 'ready')" in r.stdout, r
+        assert json.loads(f.state.read_text())["active_account"] == "other"
+        assert json.loads(f.state.read_text())["events"][-1]["to"] == "other"
+
+
+def test_rotate_creates_a_missing_state_directory_private_to_the_service_identity(f):
+    if os.geteuid() == 0:
+        print("skip test_rotate_creates_a_missing_state_directory_private_to_the_service_identity: "
+              "root would need the real service account")
+        return
+    with config_and_tokens_restored(f), state_restored(f):
+        rotate_config(f, "other")
+        f.set_active(False)
+        shutil.rmtree(f.state_dir)
+        r = f.run("rotate", "other")
+        assert r.returncode == 0, r
+        assert f.state_dir.is_dir() and not f.state_dir.is_symlink()
+        st = os.lstat(f.state_dir)
+        assert stat.S_IMODE(st.st_mode) == 0o700 and (st.st_uid, st.st_gid) == (os.getuid(), os.getgid())
+        assert json.loads(f.state.read_text())["active_account"] == "other"
+        assert mode(f.state) == 0o600
+
+
 def main():
     f = Fixture()
     order = ["test_prefix_keeps_the_callers_ids_even_if_the_host_has_the_service_account",
@@ -1410,7 +1516,10 @@ def main():
              "test_add_user_removes_placeholder_devices_and_names_each",
              "test_init_on_a_complete_configuration_reports_it_complete",
              "test_init_without_a_config_or_an_example_refuses",
-             "test_init_sets_token_modes_and_leaves_symbolic_links_alone"]
+             "test_init_sets_token_modes_and_leaves_symbolic_links_alone",
+             "test_rotate_refuses_each_ineligible_target_with_its_reason_and_keeps_state",
+             "test_rotate_counts_a_passed_reset_as_zero_utilisation",
+             "test_rotate_creates_a_missing_state_directory_private_to_the_service_identity"]
     tests = [(n, globals()[n]) for n in order]  # the fixture is built up step by step
     assert sorted(order) == sorted(n for n, g in globals().items() if n.startswith("test_") and callable(g))
     try:
