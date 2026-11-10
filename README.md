@@ -354,10 +354,13 @@ rate-limit headers:
   with a tick at the switch threshold, reset countdowns, upstream status and
   the active account. Hover a reset countdown for the exact reset time in your
   browser's time zone and in UTC. A private account carries a "private to
-  <device>" badge. An account with `weekly_cap` or `weekly_pacing` also
-  carries a badge for the limit in force: `weekly cap 50%`, or `paced 11% now
-  of 50%` for a paced account, with ` · reached` added once its weekly use is
-  at or over that limit.
+  <device>" badge. An account with `weekly_cap` or `weekly_pacing` shows its
+  limit on the weekly meter: a red line at `weekly_cap` with the part after it
+  hatched, as it is not available, and for a paced account a marker at the
+  allowance now, which moves along the bar through the week and carries a
+  small tag with the allowance percentage. Hover the line or the marker for
+  its full value. Once weekly use is at or over the allowance, the meter says
+  `weekly cap reached` or `paced allowance reached`.
 - **Weekly quota, all accounts**: the enabled accounts' current weekly
   usage, summed (blue), against their combined capacity (orange: 100% per
   account, scaled by `accounts[].weight`). Usage drops at each account's weekly

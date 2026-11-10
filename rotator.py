@@ -1551,7 +1551,7 @@ PANEL_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta
 <title>claude-rotate</title>
 <style>
  :root{color-scheme:dark;--page:#0d0d0d;--surface:#1a1a19;--ink:#f0efec;--ink2:#c3c2b7;--muted:#898781;--grid:#2c2c2a;--axis:#383835;
-  --border:rgba(255,255,255,.10);--s1:#3987e5;--s2:#d95926;--track:#0d366b;--good:#0ca30c;--warn:#fab219;--crit:#d03b3b}
+  --border:rgba(255,255,255,.10);--s1:#3987e5;--s2:#d95926;--track:#0d366b;--good:#0ca30c;--warn:#fab219;--crit:#d03b3b;--hatch:rgba(255,255,255,.3)}
  *{box-sizing:border-box} body{margin:0;background:var(--page);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-text-size-adjust:100%;text-size-adjust:100%}
  main{max-width:1180px;margin:0 auto;padding:20px 24px 40px;display:grid;gap:16px}
  header{display:flex;align-items:center;gap:12px;flex-wrap:wrap} h1{font-size:18px;margin:0;font-weight:600}
@@ -1571,6 +1571,14 @@ PANEL_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta
  .meter-row{display:grid;grid-template-columns:28px 1fr 250px;gap:10px;align-items:center;margin:8px 0}
  .meter{position:relative;height:8px;border-radius:4px;background:var(--track)} .meter i{position:absolute;inset:0 auto 0 0;border-radius:4px}
  .meter .tick{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--ink2);opacity:.6}
+ .meter .hatch{position:absolute;top:0;bottom:0;right:0;border-radius:4px;background:repeating-linear-gradient(135deg,var(--hatch) 0 2px,transparent 2px 6px)}
+ .meter .cap{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--crit)}
+ .meter .pace{position:absolute;top:-4px;bottom:-4px;width:2px;margin-left:-1px;background:var(--ink)}
+ .meter .pace::before{content:'';position:absolute;top:-6px;left:-4px;border:5px solid transparent;border-bottom:0;border-top-color:var(--ink)}
+ .meter .pace b{position:absolute;bottom:100%;margin-bottom:8px;left:50%;transform:translateX(-50%);font-size:11px;font-weight:600;line-height:1;color:var(--ink);white-space:nowrap}
+ .meter.tagged{margin-top:22px}
+ .meter .pace.lo b{left:-1px;transform:none}
+ .meter .pace.hi b{left:auto;right:-1px;transform:none}
  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--ink2);font-weight:400;margin-left:auto}
  .key{display:inline-block;width:16px;border-top:2px solid;vertical-align:4px;margin-right:6px}
  .key.dash{border-top-style:dashed} .key.band{height:10px;border:0;vertical-align:-1px;background:rgba(208,59,59,.3)}
@@ -1638,9 +1646,15 @@ function day(ts){return new Date(ts*1000).toLocaleDateString([],{month:'short',d
 function dur(s){return s<5400?Math.round(s/60)+' min':s<2*D?(s/H).toFixed(s<10*H?1:0)+' h':(s/D).toFixed(1)+' d'}
 function ago(min){return min==null?'never':min<1?'just now':min<60?min+' min ago':(min/60).toFixed(1)+' h ago'}
 function cell(b,l){return b?`<td data-l="${l}">${money(b.cost_usd)}<span class="sub">${fmt(tok(b))} tok &middot; ${fmt(b.requests)} req</span></td>`:`<td data-l="${l}" class="muted">&ndash;</td>`}
-function meter(label,u,thr,reset,ts){
-  const sev=u>=1?['var(--crit)',' &#10005; limit reached']:u>=thr?['var(--warn)',' &#9888; past switch point']:['var(--s1)',''];
-  return `<div class="meter-row"><span class="muted">${label}</span><div class="meter"><i style="width:${Math.min(100,u*100)}%;background:${sev[0]}"></i><span class="tick" style="left:${thr*100}%"></span></div>`
+function meter(label,u,thr,reset,ts,a){
+  const lim=a&&a.weekly_allowance!=null, paced=lim&&a.weekly_pacing, al=lim?a.weekly_allowance:0, cap=lim&&a.weekly_cap!=null?a.weekly_cap:1;
+  const hit=lim&&u>=al, pc=x=>+(x*100).toFixed(2), rd=x=>Math.round(x*100), pacedTxt='paced allowance '+rd(al)+'% now of '+rd(cap)+'%';
+  const sev=u>=1?['var(--crit)',' &#10005; limit reached']:hit?['var(--warn)',paced?' &#9888; paced allowance reached':' &#9888; weekly cap reached']:u>=thr?['var(--warn)',' &#9888; past switch point']:['var(--s1)',''];
+  const hatch=lim&&cap<1?`<span class="hatch" style="left:${pc(cap)}%"></span>`:'';
+  const capLine=lim&&cap<1?`<span class="cap" style="left:${pc(cap)}%" title="weekly cap ${rd(cap)}%: the hatched part is not available"></span>`:'';
+  const pace=paced?`<span class="pace${al*100<8?' lo':al*100>92?' hi':''}" style="left:${pc(al)}%" title="${pacedTxt}"><b>${rd(al)}%</b></span>`:'';
+  const aria=lim?` role="img" aria-label="${label} usage ${rd(u)}%, ${paced?pacedTxt:'weekly cap '+rd(al)+'%'}${hit?', reached':''}"`:'';
+  return `<div class="meter-row"><span class="muted">${label}</span><div class="meter${paced?' tagged':''}"${aria}>${hatch}<i style="width:${Math.min(100,u*100)}%;background:${sev[0]}"></i><span class="tick" style="left:${thr*100}%"></span>${capLine}${pace}</div>`
     +`<span><b>${Math.round(u*100)}%</b> <span class="muted small"${ts?` title="${esc(resetTitle(ts))}"`:''}>${reset}</span><span class="small">${sev[1]}</span></span></div>`}
 function spark(v){if(!v||!v.length)return '';const w=96,h=24,m=Math.max(...v)||1,y=x=>(h-2-x/m*(h-4)).toFixed(1);
   return `<svg width="${w}" height="${h}"><polyline points="${v.map((x,i)=>(i/(v.length-1)*w).toFixed(1)+','+y(x)).join(' ')}" fill="none" stroke="var(--muted)" stroke-width="1.5"/><circle cx="${w}" cy="${y(v[v.length-1])}" r="3" fill="var(--s1)"/></svg>`}
@@ -1721,10 +1735,9 @@ async function refresh(){
     const seen=a.last_seen?ago(Math.round((Date.now()/1000-a.last_seen)/60)):'never';
     return `<div class="card"><div class="acct-head"><b>${esc(name)}</b>${name===st.active_account?'<span class="badge"><span class="dot" style="background:var(--good)"></span>active</span>':''}`
       +(a.disabled?'<span class="badge">disabled</span>':'')+(a.private_to?`<span class="badge">private to ${esc([].concat(a.private_to).join(', '))}</span>`:'')+(a.priority!==100?`<span class="badge">prio ${esc(a.priority)}</span>`:'')
-      +(a.weekly_allowance!=null?`<span class="badge">${esc((a.weekly_pacing?'paced '+Math.round(a.weekly_allowance*100)+'% now of '+Math.round((a.weekly_cap==null?1:a.weekly_cap)*100)+'%':'weekly cap '+Math.round(a.weekly_allowance*100)+'%')+(u7>=a.weekly_allowance?' · reached':''))}</span>`:'')
       +`<span class="muted small" style="margin-left:auto">upstream: ${esc(a.status||'n/a')} &middot; seen ${seen}</span></div>`
       +meter('5h',u5,st.switch_threshold,a.reset_5h_in_min>0?'resets in '+dur(a.reset_5h_in_min*60):'window idle',a.reset_5h_in_min>0&&a.reset_5h)
-      +meter('7d',u7,st.switch_threshold_7d,a.reset_7d_in_h>0?'resets in '+dur(a.reset_7d_in_h*H):'window idle',a.reset_7d_in_h>0&&a.reset_7d)+'</div>'}).join('');
+      +meter('7d',u7,st.switch_threshold_7d,a.reset_7d_in_h>0?'resets in '+dur(a.reset_7d_in_h*H):'window idle',a.reset_7d_in_h>0&&a.reset_7d,a)+'</div>'}).join('');
   const sc=$('wk-scroll'), keep=sc&&sc.scrollWidth?sc.scrollWidth-sc.clientWidth-sc.scrollLeft:null;  // keep the view across redraws
   $('weekly').innerHTML=weekly(wk);
   const nsc=$('wk-scroll'); if(nsc&&WK) nsc.scrollLeft=keep==null?WK.start:nsc.scrollWidth-nsc.clientWidth-keep;

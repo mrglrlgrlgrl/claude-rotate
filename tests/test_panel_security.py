@@ -49,16 +49,36 @@ const context = vm.createContext({URL,URLSearchParams,location:{search:'?key=fak
   const titles=elements.accounts.innerHTML.match(/title="[^"]*2026-11-05 13:00 UTC"/g)||[];
   assert.equal(titles.length,2,'5h and 7d reset spans need a UTC title');
   const acct=(extra)=>{status.accounts={flat:Object.assign({priority:100},extra)};return vm.runInContext('refresh()',context,{timeout:1000}).then(()=>elements.accounts.innerHTML)};
+  const noBadge=(h,m)=>assert(!h.includes('class="badge">weekly cap') && !h.includes('class="badge">paced'),m+': header badge still drawn');
+  const capLine=(p)=>`<span class="cap" style="left:${p}%" title="weekly cap ${p}%: the hatched part is not available"></span>`;
   let html=await acct({weekly_cap:.5,weekly_pacing:false,weekly_allowance:.5,effective_util_7d:.2});
-  assert(html.includes('weekly cap 50%') && !html.includes('reached') && !html.includes('paced'),'flat cap badge wrong');
+  assert(html.includes('<span class="hatch" style="left:50%"></span>') && html.includes(capLine(50)) && html.includes('aria-label="7d usage 20%, weekly cap 50%"'),'flat cap marks wrong');
+  assert(html.includes('<span class="hatch" style="left:50%"></span><i style='),'hatch must precede the fill');
+  assert(!html.includes('class="pace') && !html.includes('tagged') && !html.includes('reached') && !html.includes('paced'),'flat cap shows pacing or reached');
+  noBadge(html,'flat');
   html=await acct({weekly_cap:.5,weekly_pacing:true,weekly_allowance:.1071,effective_util_7d:.05});
-  assert(html.includes('paced 11% now of 50%') && !html.includes('reached') && !html.includes('weekly cap'),'paced badge wrong');
+  assert(html.includes('<span class="pace" style="left:10.71%" title="paced allowance 11% now of 50%"><b>11%</b></span>') && html.includes('class="meter tagged"') && html.includes(capLine(50)) && !html.includes('reached'),'paced cap marks wrong');
+  assert(html.includes('<span class="hatch" style="left:50%"></span><i style='),'hatch must precede the fill (paced)');
+  noBadge(html,'paced');
   html=await acct({weekly_cap:null,weekly_pacing:true,weekly_allowance:.1071,effective_util_7d:.05});
-  assert(html.includes('paced 11% now of 100%'),'paced badge without a cap wrong');
+  assert(html.includes('title="paced allowance 11% now of 100%"><b>11%</b></span>') && !html.includes('class="cap"') && !html.includes('class="hatch"'),'paced without a cap wrong');
+  noBadge(html,'paced no cap');
+  for(const [al,cls] of [[.03,'pace lo'],[.97,'pace hi'],[.5,'pace']]){
+    html=await acct({weekly_cap:null,weekly_pacing:true,weekly_allowance:al,effective_util_7d:0});
+    assert(html.includes(`class="${cls}" style=`),'tag placement wrong for '+al);
+  }
   html=await acct({weekly_cap:.5,weekly_pacing:true,weekly_allowance:.1071,effective_util_7d:.2});
-  assert(html.includes('paced 11% now of 50% · reached'),'reached marker missing');
+  assert(html.includes('paced allowance reached') && html.includes(', reached"'),'paced reached missing');
+  noBadge(html,'paced reached');
+  html=await acct({weekly_cap:.5,weekly_pacing:false,weekly_allowance:.5,effective_util_7d:.6});
+  assert(html.includes('weekly cap reached'),'flat reached missing');
+  html=await acct({weekly_cap:.5,weekly_pacing:false,weekly_allowance:.5,effective_util_7d:1});
+  assert(html.includes('limit reached') && !html.includes('weekly cap reached'),'full use must say limit reached');
+  html=await acct({weekly_cap:0,weekly_pacing:false,weekly_allowance:0,effective_util_7d:0});
+  assert(html.includes('<span class="hatch" style="left:0%"></span>'),'zero cap must hatch everything');
   html=await acct({weekly_cap:null,weekly_pacing:false,weekly_allowance:null,effective_util_7d:.2});
-  assert(!html.includes('weekly cap') && !html.includes('paced'),'badge shown without cap or pacing');
+  for(const s of ['class="hatch"','class="cap"','class="pace"','tagged','role="img"','weekly cap','paced'])assert(!html.includes(s),'unexpected '+s+' without cap or pacing');
+  noBadge(html,'no limits');
   // reload: a fresh context, the stub carried over, no ?key= in the URL
   let reload=await boot('',context.sessionStorage);
   assert(bearers(reload).length>=2 && bearers(reload).every(b=>b==='Bearer fake-viewer-key'),'reload must send the stored key');
