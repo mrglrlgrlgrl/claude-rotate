@@ -1184,6 +1184,66 @@ def test_menu(f):
     assert r.returncode == 1 and "usage" in r.stdout.lower(), r
 
 
+HOLD_AND_RUN = (
+    "import fcntl, json, os, subprocess, sys\n"
+    "lock, admin, caller_holds = sys.argv[1], sys.argv[2], sys.argv[3] == 'held'\n"
+    "args = sys.argv[4:]\n"
+    "held = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)\n"
+    "fcntl.flock(held, fcntl.LOCK_EX)\n"
+    # The held descriptor is handed over, or a second descriptor on the same file that holds nothing.
+    "fd = held if caller_holds else os.open(lock, os.O_RDWR)\n"
+    "env = dict(os.environ, CLAUDE_ROTATE_LOCK_FD=str(fd))\n"
+    "r = subprocess.run([sys.executable, '-I', admin, *args], env=env, pass_fds=[fd], timeout=20,\n"
+    "                   capture_output=True, text=True)\n"
+    "probe = ('import fcntl, os, sys\\n'\n"
+    "         'fd = os.open(sys.argv[1], os.O_RDWR)\\n'\n"
+    "         'try:\\n'\n"
+    "         '    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\\n'\n"
+    "         'except BlockingIOError:\\n'\n"
+    "         '    sys.exit(0)\\n'\n"
+    "         'sys.exit(1)\\n')\n"
+    "third = subprocess.run([sys.executable, '-c', probe, lock], timeout=20)\n"
+    "print(json.dumps({'rc': r.returncode, 'stdout': r.stdout, 'stderr': r.stderr,\n"
+    "                  'still_locked': third.returncode == 0}))\n")
+
+
+def run_with_lock_descriptor(f, holds, *args):
+    """Run an admin command as install.sh does: a parent holds the lock file's flock and passes a
+    descriptor in CLAUDE_ROTATE_LOCK_FD. With holds False the descriptor is a second open of the same
+    file that the parent's lock excludes. Returns the admin's result plus whether a third process
+    still cannot take the lock once the admin has finished."""
+    lock = f.prefix / "run/claude-rotate.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    r = subprocess.run([sys.executable, "-c", HOLD_AND_RUN, str(lock), str(ADMIN), "held" if holds else "other",
+                        *args], env=f.env, text=True, capture_output=True, timeout=60)
+    assert r.returncode == 0, r
+    return json.loads(r.stdout)
+
+
+def test_inherited_lock_descriptor_is_reused_and_kept_by_a_locking_command(f):
+    before = f.cfg()
+    got = run_with_lock_descriptor(f, True, "add-user", "lock-held", "--no-restart")
+    try:
+        assert got["rc"] == 0, got
+        assert "lock-held" in got["stdout"], got
+        assert f.cfg()["devices"].get("lock-held", "").startswith("dev-lock-held-"), got
+        # AdminLock never unlocks an inherited descriptor: the parent still holds the lock.
+        assert got["still_locked"] is True, got
+    finally:
+        f.config.write_text(json.dumps(before))
+
+
+def test_inherited_lock_descriptor_that_the_caller_does_not_hold_is_refused(f):
+    before = f.config.read_bytes()
+    got = run_with_lock_descriptor(f, False, "add-user", "lock-contended", "--no-restart")
+    assert got["rc"] == 1, got
+    assert got["stderr"].startswith("error: the inherited lock descriptor is not held by the caller"), got
+    assert got["stdout"] == "", got
+    assert f.config.read_bytes() == before
+    assert "lock-contended" not in f.cfg()["devices"]
+    assert got["still_locked"] is True, got
+
+
 def main():
     f = Fixture()
     order = ["test_prefix_keeps_the_callers_ids_even_if_the_host_has_the_service_account",
@@ -1208,7 +1268,9 @@ def main():
              "test_check_refuses_a_bad_config_and_changes_nothing", "test_refuses_without_root_or_a_prefix",
              "test_service_identity_missing_is_refused_in_process",
              "test_symlinked_ancestor_of_a_managed_path_is_refused",
-             "test_set_account", "test_menu"]
+             "test_set_account", "test_menu",
+             "test_inherited_lock_descriptor_is_reused_and_kept_by_a_locking_command",
+             "test_inherited_lock_descriptor_that_the_caller_does_not_hold_is_refused"]
     tests = [(n, globals()[n]) for n in order]  # the fixture is built up step by step
     assert sorted(order) == sorted(n for n, g in globals().items() if n.startswith("test_") and callable(g))
     try:
