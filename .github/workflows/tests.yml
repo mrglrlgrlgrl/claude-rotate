@@ -3,7 +3,10 @@ name: tests
 on:
   pull_request:
     branches: [main]
-  # image.yml runs these tests on each push to main and each v* tag, before it publishes an image.
+  push:
+    branches-ignore: [main]
+  # tests.yml runs on each pull request and each push to a branch other than
+  # main. image.yml runs it on main and v* tags, before it publishes an image.
   workflow_call:
 
 jobs:
