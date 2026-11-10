@@ -1244,6 +1244,89 @@ def test_inherited_lock_descriptor_that_the_caller_does_not_hold_is_refused(f):
     assert got["still_locked"] is True, got
 
 
+@contextlib.contextmanager
+def config_and_tokens_restored(f):
+    """Leave the config (bytes and mode) and the tokens directory as they were."""
+    config, config_mode = f.config.read_bytes(), mode(f.config)
+    names = {p.name for p in f.tokens.iterdir()}
+    try:
+        yield
+    finally:
+        for p in f.tokens.iterdir():
+            if p.name not in names:
+                p.unlink()
+        f.config.write_bytes(config)
+        f.config.chmod(config_mode)
+
+
+def ready_config(f, devices=None, accounts=None):
+    """Write a config with one account that has a token file, plus the given devices and accounts."""
+    token = f.tokens / "ready.token"
+    token.write_text(TOKEN)
+    token.chmod(0o640)
+    cfg = f.cfg()
+    cfg["accounts"] = [{"name": "ready", "token_file": "tokens/ready.token"}] + (accounts or [])
+    cfg["devices"] = {"good": "dev-good-0123456789abcdef"} if devices is None else devices
+    f.config.write_text(json.dumps(cfg))
+
+
+def test_readiness_reports_each_problem_through_check(f):
+    with config_and_tokens_restored(f):
+        # (1) An account without a token file warns that startup skips it; it does not fail readiness.
+        ready_config(f, accounts=[{"name": "ghost", "token_file": "tokens/ghost.token"}])
+        r = f.run("check")
+        warning = "warning: account 'ghost' has no token file (tokens/ghost.token); it is skipped at startup"
+        assert r.returncode == 0 and warning in r.stdout.splitlines(), r
+        assert "configuration complete" in r.stdout, r
+        # With nothing else to carry the service the same warning comes with a problem.
+        cfg = f.cfg()
+        cfg["accounts"] = [{"name": "ghost", "token_file": "tokens/ghost.token"}]
+        f.config.write_text(json.dumps(cfg))
+        r = f.run("check")
+        assert r.returncode == 3 and warning in r.stdout.splitlines(), r
+        assert "  - no enabled account with a non-empty token file: sudo claude-rotate-admin add-token NAME" \
+            in r.stdout.splitlines(), r
+        # (2) A device key that is empty, blank or not a string.
+        ready_config(f, devices={"good": "dev-good-0123456789abcdef", "empty": "", "blank": "  ", "number": 5})
+        r = f.run("check")
+        assert r.returncode == 3 and "setup needed:" in r.stdout, r
+        assert "  - device(s) with an empty key: empty, blank, number" in r.stdout.splitlines(), r
+        assert "unique" not in r.stdout and "placeholder" not in r.stdout, r
+        # (3) A key holding the example config's placeholder.
+        ready_config(f, devices={"good": "dev-good-0123456789abcdef", "example": "dev-example-REPLACE-WITH-X"})
+        r = f.run("check")
+        assert r.returncode == 3, r
+        assert ("  - placeholder device key(s) from the example config: example; "
+                "remove them (remove-user) and use add-user") in r.stdout.splitlines(), r
+        assert "empty key" not in r.stdout and "unique" not in r.stdout, r
+        # (4) Two devices sharing a key.
+        ready_config(f, devices={"one": "dev-shared-0123456789abcdef", "two": "dev-shared-0123456789abcdef"})
+        r = f.run("check")
+        assert r.returncode == 3, r
+        assert "  - device keys are not unique" in r.stdout.splitlines(), r
+        assert "empty key" not in r.stdout and "placeholder" not in r.stdout, r
+        # A config with none of these is complete and prints no warning.
+        ready_config(f)
+        r = f.run("check")
+        assert r.returncode == 0 and r.stdout == "configuration complete\n", r
+
+
+def test_add_user_removes_placeholder_devices_and_names_each(f):
+    with config_and_tokens_restored(f):
+        ready_config(f, devices={"example-a": "dev-a-REPLACE-WITH-X", "keep": "dev-keep-0123456789abcdef",
+                                 "example-b": "REPLACE-WITH-Y"})
+        r = f.run("add-user", "fresh", "--no-restart")
+        assert r.returncode == 0, r
+        for name in ("example-a", "example-b"):
+            assert f"removed placeholder device '{name}' from the example config" in r.stdout.splitlines(), r
+        assert "keep" not in "".join(l for l in r.stdout.splitlines() if l.startswith("removed")), r
+        devices = f.cfg()["devices"]
+        assert sorted(devices) == ["fresh", "keep"], devices
+        assert devices["keep"] == "dev-keep-0123456789abcdef"
+        assert not any("REPLACE-WITH" in v for v in devices.values())
+        assert "REPLACE-WITH" not in f.config.read_text()
+
+
 def main():
     f = Fixture()
     order = ["test_prefix_keeps_the_callers_ids_even_if_the_host_has_the_service_account",
@@ -1270,7 +1353,9 @@ def main():
              "test_symlinked_ancestor_of_a_managed_path_is_refused",
              "test_set_account", "test_menu",
              "test_inherited_lock_descriptor_is_reused_and_kept_by_a_locking_command",
-             "test_inherited_lock_descriptor_that_the_caller_does_not_hold_is_refused"]
+             "test_inherited_lock_descriptor_that_the_caller_does_not_hold_is_refused",
+             "test_readiness_reports_each_problem_through_check",
+             "test_add_user_removes_placeholder_devices_and_names_each"]
     tests = [(n, globals()[n]) for n in order]  # the fixture is built up step by step
     assert sorted(order) == sorted(n for n, g in globals().items() if n.startswith("test_") and callable(g))
     try:
