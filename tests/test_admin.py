@@ -13,6 +13,7 @@ import io
 import json
 import os
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -1485,6 +1486,157 @@ def test_rotate_creates_a_missing_state_directory_private_to_the_service_identit
         assert mode(f.state) == 0o600
 
 
+def status_line(r, prefix):
+    """The one line of a status run that starts with `prefix`."""
+    lines = [l for l in r.stdout.splitlines() if l.startswith(prefix)]
+    assert len(lines) == 1, (prefix, r)
+    return lines[0]
+
+
+def test_status_prints_a_failed_reload_and_the_settings_that_need_a_restart(f):
+    with config_and_tokens_restored(f):
+        ready_config(f)
+        f.set_active(True)
+        error = "placeholder device key(s) in config.json"
+        with FakeService(f, error=error, restart_needed=["port", "bind"]):
+            r = f.run("status")
+        assert r.returncode == 0, r
+        line = status_line(r, "live config: loaded ")
+        assert line.endswith(f"; LAST RELOAD FAILED, previous config kept: {error}; restart needed for: port, bind"), line
+        # A clean reload prints neither.
+        with FakeService(f):
+            r = f.run("status")
+        assert r.returncode == 0 and "live /rotate/status: reachable" in r.stdout, r
+        line = status_line(r, "live config: loaded ")
+        assert "LAST RELOAD FAILED" not in line and "restart needed" not in line, line
+
+
+def test_status_reports_a_live_query_that_nothing_answers(f):
+    with config_and_tokens_restored(f):
+        ready_config(f)
+        f.set_active(True)
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()  # nothing listens here now
+        cfg = f.cfg()
+        cfg["port"] = port
+        f.config.write_text(json.dumps(cfg))
+        r = f.run("status")
+        assert r.returncode == 0, r
+        line = status_line(r, "live /rotate/status:")
+        assert line.startswith("live /rotate/status: unavailable (URLError: ") and line.endswith(")"), line
+        assert "live config:" not in r.stdout
+        report = json.loads(f.run("status", "--json").stdout)
+        assert report["live"] is None and report["live_error"].startswith("URLError: "), report
+
+
+def test_status_lists_the_last_five_events_with_their_fields(f):
+    with config_and_tokens_restored(f), state_restored(f):
+        ready_config(f)
+        f.set_active(False)
+        events = [{"ts": f"2026-01-0{i}T10:00:00+0000", "type": "switch" if i % 2 else "exhausted",
+                   "from": f"from-{i}", "to": f"to-{i}", "reason": "manual" if i % 2 else "quota"}
+                  for i in range(1, 8)]
+        write_state(f, {"active_account": "ready", "accounts": {}, "events": events})
+        r = f.run("status")
+        assert r.returncode == 0, r
+        lines = r.stdout.splitlines()
+        shown = [f"  {e['ts']} {e['type']} {e['from']} -> {e['to']} ({e['reason']})" for e in events[-5:]]
+        assert lines[lines.index("recent events:") + 1:] == shown, lines
+        assert "from-1" not in r.stdout and "from-2" not in r.stdout
+        # No events, no heading.
+        write_state(f, {"active_account": "ready", "accounts": {}, "events": []})
+        r = f.run("status")
+        assert r.returncode == 0 and "recent events:" not in r.stdout, r
+
+
+def test_status_reports_an_invalid_state_file_and_still_exits_zero(f):
+    with config_and_tokens_restored(f), state_restored(f):
+        ready_config(f)
+        f.set_active(False)
+        f.state_dir.mkdir(parents=True, exist_ok=True)
+        for text, want in (("{not json", "is not valid JSON ("), ("[1]", "must contain a JSON object")):
+            f.state.write_text(text)
+            r = f.run("status")
+            assert r.returncode == 0 and r.stderr == "", (text, r)
+            line = status_line(r, "state: ERROR ")
+            assert line.startswith(f"state: ERROR {f.state} ") and want in line, line
+            assert "active account: ready (from default (first account))" in r.stdout, r
+            report = json.loads(f.run("status", "--json").stdout)
+            assert line == f"state: ERROR {report['state_error']}", (line, report)
+            assert f.state.read_text() == text
+
+
+def test_status_reports_a_broken_config_and_exits_one(f):
+    with config_and_tokens_restored(f):
+        f.config.write_text("{not json")
+        r = f.run("status")
+        assert r.returncode == 1 and r.stderr == "", r
+        line = status_line(r, "config: ERROR ")
+        assert line.startswith(f"config: ERROR {f.config} is not valid JSON (") and "Expecting" in line, line
+        assert "accounts (token validity" not in r.stdout and "devices:" not in r.stdout, r
+        assert f.config.read_text() == "{not json"
+
+
+def test_status_follows_the_current_release_link_to_its_marker(f):
+    with config_and_tokens_restored(f):
+        ready_config(f)
+        f.set_active(False)
+        opt = f.prefix / "opt/claude-rotate"
+        opt_existed = opt.exists()
+        release, current = opt / "releases/9.9.9", opt / "current"
+        marker = release / ".claude-rotate-release"
+        installed = {"installed_at": "2026-01-02T03:04:05Z", "version": "9.9.9"}
+
+        def release_line():
+            r = f.run("status")
+            assert r.returncode == 0, r
+            return status_line(r, "release: ")
+
+        def report():
+            return json.loads(f.run("status", "--json").stdout)
+
+        try:
+            assert release_line() == "release: none"
+            assert report()["current"] is None and report()["release"] is None
+            release.mkdir(parents=True)
+            current.symlink_to("releases/9.9.9")  # relative to the directory holding the link
+            assert release_line() == "release: releases/9.9.9"
+            assert report()["current"] == "releases/9.9.9" and report()["release"] is None
+            marker.write_text(json.dumps(installed))
+            assert release_line() == "release: releases/9.9.9 (installed 2026-01-02T03:04:05Z)"
+            assert report()["release"] == installed
+            current.unlink()
+            current.symlink_to(release)  # an absolute target is used as it is
+            assert release_line() == f"release: {release} (installed 2026-01-02T03:04:05Z)"
+            assert report()["current"] == str(release) and report()["release"] == installed
+            marker.write_text("{nope")
+            assert report()["release"] == {"error": "unreadable marker"}
+            assert release_line().startswith(f"release: {release}")
+        finally:
+            current.unlink(missing_ok=True)
+            shutil.rmtree(opt / "releases" if opt_existed else opt.parent, ignore_errors=True)
+
+
+def test_status_queries_loopback_for_a_wildcard_empty_or_non_string_bind(f):
+    with config_and_tokens_restored(f):
+        ready_config(f)
+        f.set_active(True)
+        for bind in ("0.0.0.0", "::", "", 5):
+            with FakeService(f) as service:
+                cfg = f.cfg()
+                cfg["bind"] = bind
+                f.config.write_text(json.dumps(cfg))
+                r = f.run("status")
+                assert r.returncode == 0 and "live /rotate/status: reachable" in r.stdout, (bind, r)
+                assert service.hits == 1, (bind, service.hits)
+                report = json.loads(f.run("status", "--json").stdout)
+                assert service.hits == 2, (bind, service.hits)
+                assert report["bind"][0] == "127.0.0.1", (bind, report["bind"])
+                assert report["live"]["active_account"] == "a", (bind, report["live"])
+
+
 def main():
     f = Fixture()
     order = ["test_prefix_keeps_the_callers_ids_even_if_the_host_has_the_service_account",
@@ -1519,7 +1671,14 @@ def main():
              "test_init_sets_token_modes_and_leaves_symbolic_links_alone",
              "test_rotate_refuses_each_ineligible_target_with_its_reason_and_keeps_state",
              "test_rotate_counts_a_passed_reset_as_zero_utilisation",
-             "test_rotate_creates_a_missing_state_directory_private_to_the_service_identity"]
+             "test_rotate_creates_a_missing_state_directory_private_to_the_service_identity",
+             "test_status_prints_a_failed_reload_and_the_settings_that_need_a_restart",
+             "test_status_reports_a_live_query_that_nothing_answers",
+             "test_status_lists_the_last_five_events_with_their_fields",
+             "test_status_reports_an_invalid_state_file_and_still_exits_zero",
+             "test_status_reports_a_broken_config_and_exits_one",
+             "test_status_follows_the_current_release_link_to_its_marker",
+             "test_status_queries_loopback_for_a_wildcard_empty_or_non_string_bind"]
     tests = [(n, globals()[n]) for n in order]  # the fixture is built up step by step
     assert sorted(order) == sorted(n for n, g in globals().items() if n.startswith("test_") and callable(g))
     try:
