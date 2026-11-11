@@ -686,6 +686,37 @@ docker compose up -d
 - `/rotate/status` needs a device key, so the image has no `HEALTHCHECK`.
   Monitor it as described under [Operations](#operations).
 
+#### Adding accounts and devices
+
+`setup.sh` works on the `config.json` and `tokens/` next to itself, so run it
+from the host against the directory you mount as `/config`. It writes
+`token_file` as `tokens/<name>.token`, the relative form the container needs:
+
+```sh
+cp setup.sh config.example.json ./config/
+./config/setup.sh add-account acct-1      # paste the output of: claude setup-token
+./config/setup.sh add-device alice-laptop
+./config/setup.sh onboard alice laptop
+```
+
+- `add-account` also takes `--private-to <device>[,<device>...]` to reserve the
+  account for those devices. `onboard <user> <dev>` mints the key
+  `<user>-<dev>` and prints a welcome block.
+- Run the commands as the `user:` set in the compose file. That user must own
+  the token files, with mode 600, or the container cannot read them.
+- The proxy loads the change within `reload_poll_s` seconds, or at once with
+  `docker compose kill -s HUP claude-rotate`. Replacing a Compose `secrets:`
+  token still needs `docker compose up -d --force-recreate`, as above.
+- Every other setting is an edit to `./config/config.json`, loaded the same
+  way: `disabled`, `priority`, `weight`, `weekly_cap`, `weekly_pacing`,
+  `pace_lookahead`, `private_to`, `public_url`, and removing a device or an
+  account.
+
+`claude-rotate-admin` is for the Debian service only for now. Managing a
+container-only deployment with it from the image is planned and not yet
+available. Docker has no `rotate` or `status` equivalent today: use
+`/rotate/status` and the [analytics panel](#analytics-panel).
+
 ## Troubleshooting
 
 **Client gets 401 with `claude-rotate: unknown device key`.** The proxy is
