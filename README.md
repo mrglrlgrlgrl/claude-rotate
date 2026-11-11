@@ -955,6 +955,7 @@ those taken from other forks.
 - Added `claude-rotate-admin menu`, a prompt-driven menu for selecting, adding, changing, re-tokening, activating and removing accounts, built on the same functions as the flag commands ([cd86d99](https://github.com/mrglrlgrlgrl/claude-rotate/commit/cd86d99)).
 - Added `CLAUDE_ROTATE_BIND`, which overrides `bind` ([35f4624](https://github.com/mrglrlgrlgrl/claude-rotate/commit/35f4624)).
 - Added a Docker image and compose example, published to GHCR for amd64 and arm64 ([fdcff28](https://github.com/mrglrlgrlgrl/claude-rotate/commit/fdcff28), [35da23e](https://github.com/mrglrlgrlgrl/claude-rotate/commit/35da23e)).
+- Shipped `claude-rotate-admin` in the Docker image and added a one-off `admin` compose service with a read-write `./config`, so a container-only deployment can be managed while the proxy keeps its read-only mount ([eb9e541](https://github.com/mrglrlgrlgrl/claude-rotate/commit/eb9e541)).
 - Changed publishing: a push to `main` publishes only `edge` and `sha-<short>`, and a `vX.Y.Z` tag publishes `X.Y.Z`, `X.Y` and `latest`, skipping the test matrix when `main` already built that commit green ([ffd6acc](https://github.com/mrglrlgrlgrl/claude-rotate/commit/ffd6acc)).
 - clement-z: Harden credential boundaries, dashboard rendering and request handling; `SECURITY.md` added ([e19d5b3](https://github.com/clement-z/claude-rotate/commit/e19d5b3)).
 - clement-z: Harden the Debian systemd service and bound resource use on small VPSes ([89ec74a](https://github.com/clement-z/claude-rotate/commit/89ec74a)).
