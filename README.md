@@ -712,10 +712,33 @@ cp setup.sh config.example.json ./config/
   `pace_lookahead`, `private_to`, `public_url`, and removing a device or an
   account.
 
-`claude-rotate-admin` is for the Debian service only for now. Managing a
-container-only deployment with it from the image is planned and not yet
-available. Docker has no `rotate` or `status` equivalent today: use
-`/rotate/status` and the [analytics panel](#analytics-panel).
+#### Managing a container-only deployment
+
+The image also carries `claude-rotate-admin`, set to its container mode. The
+compose file has a one-off `admin` service for it, under the `admin` profile, so
+`docker compose up -d` never starts it:
+
+```sh
+docker compose run --rm admin add-token acct-1
+docker compose run --rm admin status
+```
+
+- The `admin` service mounts `./config` read-write. The proxy keeps
+  `./config:/config:ro`, so a compromised proxy cannot rewrite its devices or
+  tokens, and only the one-off admin container can write them.
+- Both services run as the same `user:`. The admin writes token files at mode
+  600 and the config directory at 750, so a different user leaves the proxy
+  unable to read a new token.
+- The proxy loads each change within `reload_poll_s` seconds. `rotate` edits
+  `state.json`, which a running proxy rewrites from memory, so run
+  `docker compose stop claude-rotate` first.
+- `status` asks the proxy over HTTP at `http://claude-rotate:8484`, the compose
+  service name. Set `CLAUDE_ROTATE_ADMIN_URL` on the `admin` service to change
+  it.
+
+The host route above (`setup.sh` against the mounted directory) still works as
+an alternative. Docker has no `rotate` or `status` shortcut beyond the admin:
+use `/rotate/status` and the [analytics panel](#analytics-panel).
 
 ## Troubleshooting
 

@@ -46,6 +46,9 @@ address (`deploy/compose.yaml` does), never on all host interfaces. `panel_tailn
 cannot be used there, because it needs a loopback bind. The container runs as an
 unprivileged user, and the config and token directory is mounted read-only; the
 tokens must be mode 600 and owned by that user, as in a standalone install. The
+only writer of the config is the one-off `admin` compose service
+(`docker compose run --rm admin ...`, profile `admin`), which mounts it
+read-write as the same user. The
 build context is an allowlist (`.dockerignore`), so `config.json`, `tokens/` and
 state never enter an image.
 

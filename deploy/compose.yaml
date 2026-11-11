@@ -40,6 +40,23 @@ services:
     # secrets:
     #   - acct-1
 
+  # One-off admin container: the only place ./config is writable. It never
+  # starts with "docker compose up". Run it as the proxy's user, so the tokens
+  # it writes (mode 600) stay readable by the proxy:
+  #   docker compose run --rm admin add-token acct-1
+  # rotate edits state.json, which a running proxy rewrites, so stop it first:
+  #   docker compose stop claude-rotate
+  admin:
+    image: ghcr.io/mrglrlgrlgrl/claude-rotate:latest
+    # build: ..
+    profiles: ["admin"]
+    user: "1000:1000"
+    entrypoint: ["claude-rotate-admin"]
+    restart: "no"
+    volumes:
+      - ./config:/config
+      - ./data:/data
+
 # secrets:
 #   acct-1:
 #     file: ./secrets/acct-1.token

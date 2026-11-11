@@ -5,3 +5,5 @@
 !oai_compat.py
 !requirements.lock
 !LICENSE
+!config.example.json
+!deploy/claude_rotate_admin.py
