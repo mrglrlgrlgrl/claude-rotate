@@ -48,9 +48,8 @@ unprivileged user, and the config and token directory is mounted read-only; the
 tokens must be mode 600 and owned by that user, as in a standalone install. The
 only writer of the config is the one-off `admin` compose service
 (`docker compose run --rm admin ...`, profile `admin`), which mounts it
-read-write as the same user. The
-build context is an allowlist (`.dockerignore`), so `config.json`, `tokens/` and
-state never enter an image.
+read-write as the same user. The build context is an allowlist
+(`.dockerignore`), so `config.json`, `tokens/` and state never enter an image.
 
 For Debian 12, use [the hardened systemd unit and installation guide](deploy/README.md).
 Its config/tokens are `0640 root:claude-rotate` inside private `0750` directories,

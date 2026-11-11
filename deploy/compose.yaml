@@ -48,6 +48,8 @@ services:
   #   docker compose stop claude-rotate
   admin:
     image: ghcr.io/mrglrlgrlgrl/claude-rotate:latest
+    # The admin is only in an image built from this change. Until a release
+    # includes it, build from a checkout:
     # build: ..
     profiles: ["admin"]
     user: "1000:1000"
