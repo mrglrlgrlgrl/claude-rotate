@@ -381,6 +381,12 @@ rate-limit headers:
   requests, tokens, the share of prompt tokens served from cache, and a
   *cost-equivalent* column: what the usage would cost at API list prices (incl.
   cache read 0.1× / write 1.25×), i.e. what the subscriptions are saving you.
+  Under each table a pie chart shows each row's share of that
+  cost-equivalent, in table order: the top six rows get a slice each and the
+  rest are summed as "other". The by-model pie follows the period selector.
+  Without usage the pie gives way to "no usage".
+- **Recent switches**: the latest account switches and their reasons, in
+  their own full-width card below the two tables.
 
 The 24 h figures come from the audit log. Longer periods come from
 `device_usage.json` next to `state.json`: daily totals per device and model for

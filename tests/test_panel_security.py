@@ -14,6 +14,10 @@ def main():
     tree = ast.parse((Path(__file__).resolve().parent.parent / "rotator.py").read_text())
     panel = next(ast.literal_eval(n.value) for n in tree.body
                  if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "PANEL_HTML" for t in n.targets))
+    split_end = panel.index("</section>", panel.index('<section class="split">'))
+    assert 'id="events"' not in panel[panel.index('<section class="split">'):split_end]
+    assert panel[split_end:].replace("</section>\n", "", 1).startswith(
+        '<section class="card"><h2>Recent switches</h2><div class="timeline" id="events">')
     script = panel.split("<script>", 1)[1].split("</script>", 1)[0]
     harness = r'''
 const vm = require('node:vm');
@@ -21,7 +25,7 @@ const assert = require('node:assert/strict');
 const script = JSON.parse(process.argv[1]);
 const value = '<mark data-audit="marker">&\'"</mark>';
 const elements = {}, urls = [], replaced = [];
-const usage = {requests:1,input_tokens:1,output_tokens:1,cache_read:0,cache_write:0,cost_usd:0};
+const usage = {requests:1,input_tokens:1,output_tokens:1,cache_read:0,cache_write:0,cost_usd:1};
 const stats = {devices:{[value]:{last_model:value,last_account:value,key_suffix:value}},alerts:[{level:'warn',text:value}],by_device:{[value]:usage},by_model:{[value]:usage},by_account:{[value]:usage},periods:{since:value,'7d':{device:{[value]:usage},model:{[value]:usage}},'30d':{device:{[value]:usage},model:{[value]:usage}},all:{device:{[value]:usage,[value+'-gone']:usage},model:{[value]:usage}},trend:{[value]:[0,1,2]}}};
 const status = {accounts:{[value]:{priority:100,private_to:[value,value+"-2"],reset_5h:1793883600,reset_7d:1793883600,reset_5h_in_min:30,reset_7d_in_h:50}},active_account:value,strategy:value,switch_threshold:.8,switch_threshold_7d:.98,recent_events:[{ts:value,from:value,to:value,reason:value}],weekly:{series:[[0,0,100],[3600,10,100]],projection:[[3600,10,100],[7200,100,100]],rate_per_day:5,eta:7200,back:9000,back_account:value,capacity:200}};
 const makeStorage=(init)=>{const m=new Map(Object.entries(init||{}));return {m,getItem:k=>m.has(k)?m.get(k):null,setItem:(k,v)=>{m.set(k,String(v))},removeItem:k=>{m.delete(k)}}};
@@ -41,11 +45,29 @@ const context = vm.createContext({URL,URLSearchParams,location:{search:'?key=fak
   assert(urls.every(({url,opts})=>!url.includes('key=')&&opts.headers.Authorization==='Bearer fake-viewer-key'));
   assert(elements.weekly.innerHTML.includes('class="hit"'),'shortfall band not drawn');
   assert(elements.devices.innerHTML.includes('removed'),'removed device not listed');
-  for(const id of ['pills','accounts','weekly','alerts','devices','models','by-account','events']){
+  for(const id of ['pills','accounts','weekly','alerts','devices','models','by-account','events','model-pie','account-pie']){
     assert(!elements[id].innerHTML.includes('<mark'),id+' contains raw markup');
     assert(elements[id].innerHTML.includes('&lt;mark'),id+' lost escaped text');
   }
   assert(elements.accounts.innerHTML.includes('private to &lt;mark') && elements.accounts.innerHTML.includes('&lt;/mark&gt;-2'),'private badge missing or unescaped');
+  const slices=id=>(elements[id].innerHTML.match(/class="slice"/g)||[]).length;
+  assert(slices('model-pie')===1 && slices('account-pie')===1 && elements['model-pie'].innerHTML.includes('<svg'),'one row must draw one slice');
+  assert(elements['model-pie'].innerHTML.includes('100%'),'single slice legend must read 100%');
+  const keepStats={by_model:stats.by_model,by_account:stats.by_account,m7:stats.periods['7d'].model};
+  const many={}; for(let i=0;i<8;i++) many['m'+i]={...usage,cost_usd:10-i};
+  stats.periods['7d'].model=many; stats.by_model={only:usage};
+  await vm.runInContext('refresh()',context,{timeout:1000});
+  assert.equal(slices('model-pie'),7,'8 models must draw 6 named slices plus other');
+  assert(elements['model-pie'].innerHTML.includes('<span>other</span>') && elements['model-pie'].innerHTML.includes('<span>m5</span>') && !elements['model-pie'].innerHTML.includes('<span>m6</span>'),'other legend entry wrong');
+  elements.period.onclick({target:{dataset:{p:'24 h'}}}); await vm.runInContext('refresh()',context,{timeout:1000});
+  assert.equal(slices('model-pie'),1,'the 24 h period must redraw the model pie');
+  elements.period.onclick({target:{dataset:{p:'7 d'}}}); await vm.runInContext('refresh()',context,{timeout:1000});
+  assert.equal(slices('model-pie'),7,'the 7 d period must redraw the model pie');
+  stats.by_model={}; stats.periods['7d'].model={}; stats.by_account={x:{...usage,cost_usd:0}};
+  await vm.runInContext('refresh()',context,{timeout:1000});
+  for(const id of ['model-pie','account-pie']) assert(elements[id].innerHTML.includes('no usage') && !elements[id].innerHTML.includes('<svg'),id+' must show no usage');
+  stats.by_model=keepStats.by_model; stats.by_account=keepStats.by_account; stats.periods['7d'].model=keepStats.m7;
+  await vm.runInContext('refresh()',context,{timeout:1000});
   const titles=elements.accounts.innerHTML.match(/title="[^"]*2026-11-05 13:00 UTC"/g)||[];
   assert.equal(titles.length,2,'5h and 7d reset spans need a UTC title');
   const acct=(extra)=>{status.accounts={flat:Object.assign({priority:100},extra)};return vm.runInContext('refresh()',context,{timeout:1000}).then(()=>elements.accounts.innerHTML)};

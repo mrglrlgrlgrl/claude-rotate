@@ -1551,7 +1551,7 @@ PANEL_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta
 <title>claude-rotate</title>
 <style>
  :root{color-scheme:dark;--page:#0d0d0d;--surface:#1a1a19;--ink:#f0efec;--ink2:#c3c2b7;--muted:#898781;--grid:#2c2c2a;--axis:#383835;
-  --border:rgba(255,255,255,.10);--s1:#3987e5;--s2:#d95926;--track:#0d366b;--good:#0ca30c;--warn:#fab219;--crit:#d03b3b;--hatch:rgba(255,255,255,.3)}
+  --border:rgba(255,255,255,.10);--s1:#3987e5;--s2:#d95926;--c1:#3987e5;--c2:#d95926;--c3:#199e70;--c4:#c98500;--c5:#d55181;--c6:#008300;--track:#0d366b;--good:#0ca30c;--warn:#fab219;--crit:#d03b3b;--hatch:rgba(255,255,255,.3)}
  *{box-sizing:border-box} body{margin:0;background:var(--page);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-text-size-adjust:100%;text-size-adjust:100%}
  main{max-width:1180px;margin:0 auto;padding:20px 24px 40px;display:grid;gap:16px}
  header{display:flex;align-items:center;gap:12px;flex-wrap:wrap} h1{font-size:18px;margin:0;font-weight:600}
@@ -1592,6 +1592,9 @@ PANEL_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta
  .seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-left:auto}
  .seg button{background:none;border:0;color:var(--ink2);padding:4px 12px;font:inherit;font-size:12px;cursor:pointer} .seg button.on{background:var(--grid);color:var(--ink);font-weight:600}
  .split{display:grid;grid-template-columns:1.3fr 1fr;gap:16px}
+ .pie{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-top:16px} .pie svg{display:block;flex:none}
+ .pie ul{list-style:none;margin:0;padding:0;display:grid;gap:4px;color:var(--ink2);font-size:12px} .pie li{display:flex;align-items:center;gap:8px}
+ .pie li i{width:10px;height:10px;border-radius:2px;flex:none} .pie li b{margin-left:auto;padding-left:12px;font-weight:500;font-variant-numeric:tabular-nums}
  .timeline div{display:flex;gap:12px;padding:6px 0;border-bottom:1px solid var(--grid);color:var(--ink2)} .timeline div:last-child{border-bottom:0}
  .linkbtn{background:none;border:1px solid var(--border);border-radius:6px;color:var(--ink2);font:inherit;font-size:12px;padding:2px 8px;cursor:pointer}
  @media (max-width:900px){.kpis{grid-template-columns:1fr 1fr}.hero{grid-column:1/-1}.split{grid-template-columns:1fr}
@@ -1620,9 +1623,10 @@ PANEL_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta
  <div id="weekly" class="muted">collecting data</div><div class="tip" id="tip"></div></section>
 <section class="card"><h2>Devices</h2><table id="devices"></table></section>
 <section class="split">
- <div class="card"><h2>By model <span class="seg" id="period"></span></h2><table id="models"></table></div>
- <div class="card"><h2>By account, 24 h</h2><table id="by-account"></table><h2 style="margin-top:20px">Recent switches</h2><div class="timeline" id="events"></div></div>
+ <div class="card"><h2>By model <span class="seg" id="period"></span></h2><table id="models"></table><div id="model-pie"></div></div>
+ <div class="card"><h2>By account, 24 h</h2><table id="by-account"></table><div id="account-pie"></div></div>
 </section>
+<section class="card"><h2>Recent switches</h2><div class="timeline" id="events"></div></section>
 <p class="muted small">Cost-equivalent = API list prices (cache read 0.1&times;, write 1.25&times;); actual spend is covered by the subscriptions.</p>
 </main>
 <script>
@@ -1646,6 +1650,19 @@ function day(ts){return new Date(ts*1000).toLocaleDateString([],{month:'short',d
 function dur(s){return s<5400?Math.round(s/60)+' min':s<2*D?(s/H).toFixed(s<10*H?1:0)+' h':(s/D).toFixed(1)+' d'}
 function ago(min){return min==null?'never':min<1?'just now':min<60?min+' min ago':(min/60).toFixed(1)+' h ago'}
 function cell(b,l){return b?`<td data-l="${l}">${money(b.cost_usd)}<span class="sub">${fmt(tok(b))} tok &middot; ${fmt(b.requests)} req</span></td>`:`<td data-l="${l}" class="muted">&ndash;</td>`}
+// Pie of each row's share of cost_usd, in row order: up to 6 named slices, the rest summed as "other".
+function pie(rows){
+  const all=rows.map(([n,b])=>[n,b.cost_usd||0]).filter(r=>r[1]>0), total=all.reduce((a,r)=>a+r[1],0);
+  if(!total) return '<span class="muted">no usage</span>';
+  const parts=all.slice(0,6).map((r,i)=>({n:r[0],v:r[1],c:`var(--c${i+1})`}));
+  const rest=all.slice(6).reduce((a,r)=>a+r[1],0); if(rest>0) parts.push({n:'other',v:rest,c:'var(--muted)'});
+  let a0=-Math.PI/2; const R=60, pt=a=>(64+R*Math.cos(a)).toFixed(2)+' '+(64+R*Math.sin(a)).toFixed(2);
+  const slices=parts.map(p=>{const a1=a0+p.v/total*2*Math.PI, s=parts.length===1
+    ?`<circle class="slice" cx="64" cy="64" r="${R}" fill="${p.c}"/>`
+    :`<path class="slice" d="M64 64L${pt(a0)}A${R} ${R} 0 ${a1-a0>Math.PI?1:0} 1 ${pt(a1)}Z" fill="${p.c}" stroke="var(--surface)" stroke-width="2"/>`; a0=a1; return s}).join('');
+  return `<div class="pie"><svg width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="share of cost-equivalent">${slices}</svg><ul>`
+    +parts.map(p=>`<li><i style="background:${p.c}"></i><span>${esc(p.n)}</span><b>${Math.round(p.v/total*100)}%</b></li>`).join('')+'</ul></div>';
+}
 function meter(label,u,thr,reset,ts,a){
   const lim=a&&a.weekly_allowance!=null, paced=lim&&a.weekly_pacing, al=lim?a.weekly_allowance:0, cap=lim&&a.weekly_cap!=null?a.weekly_cap:1;
   const hit=lim&&u>=al, pc=x=>+(x*100).toFixed(2), rd=x=>Math.round(x*100), pacedTxt='paced allowance '+rd(al)+'% now of '+rd(cap)+'%';
@@ -1752,11 +1769,15 @@ async function refresh(){
   $('devices').innerHTML=dh;
   // models over the chosen period; accounts over 24 h
   $('period').innerHTML=Object.keys(PERIODS).map(p=>`<button data-p="${p}" class="${p===period?'on':''}">${p}</button>`).join('');
-  const rows=o=>Object.entries(o||{}).sort((a,b)=>(b[1].cost_usd||0)-(a[1].cost_usd||0)).map(([n,b])=>{const prompt=(b.input_tokens||0)+(b.cache_read||0)+(b.cache_write||0);
+  const byCost=o=>Object.entries(o||{}).sort((a,b)=>(b[1].cost_usd||0)-(a[1].cost_usd||0));
+  const rows=o=>byCost(o).map(([n,b])=>{const prompt=(b.input_tokens||0)+(b.cache_read||0)+(b.cache_write||0);
     return `<tr><td>${esc(n)}</td><td>${fmt(b.requests)}</td><td>${fmt(tok(b))}</td><td>${prompt?Math.round((b.cache_read||0)/prompt*100):0}%</td><td>${money(b.cost_usd)}</td></tr>`}).join('');
   const head='<tr><th>{}</th><th>Requests</th><th>Tokens</th><th>From cache</th><th>$ equiv</th></tr>';
-  $('models').innerHTML=head.replace('{}','Model')+rows(PERIODS[period]==='24h'?stats.by_model:(per[PERIODS[period]]||{}).model);
+  const models=PERIODS[period]==='24h'?stats.by_model:(per[PERIODS[period]]||{}).model;
+  $('models').innerHTML=head.replace('{}','Model')+rows(models);
+  $('model-pie').innerHTML=pie(byCost(models));
   $('by-account').innerHTML=head.replace('{}','Account')+rows(stats.by_account);
+  $('account-pie').innerHTML=pie(byCost(stats.by_account));
   $('events').innerHTML=(st.recent_events||[]).slice().reverse().map(e=>`<div><span class="muted">${esc(String(e.ts||'').slice(5,16).replace('T',' '))}</span><span>${esc(e.from)} &rarr; ${esc(e.to)}</span><span class="badge" style="margin-left:auto">${esc(e.reason)}</span></div>`).join('')||'<span class="muted">none</span>';
   $('upd').textContent='updated '+new Date().toLocaleTimeString();
 }
