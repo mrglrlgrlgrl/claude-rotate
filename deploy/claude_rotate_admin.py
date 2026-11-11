@@ -49,6 +49,8 @@ if CONTAINER:
     ETC = CONFIG.parent
     STATE = P(os.environ.get("CLAUDE_ROTATE_STATE", "/data/state.json"))
     STATE_DIR = STATE.parent
+    # Where the proxy answers GET /rotate/status. Read only: the admin never writes to the proxy.
+    ADMIN_URL = os.environ.get("CLAUDE_ROTATE_ADMIN_URL", "http://claude-rotate:8484").rstrip("/")
 else:
     ETC = P("/etc/claude-rotate")
     CONFIG = ETC / "config.json"
@@ -136,6 +138,15 @@ def check_fixed_tree():
         refuse_symlink(CURRENT.parent, "release root")
 
 
+LOCKED_AT = 0.0
+
+
+def mark_locked():
+    """Note when the lock was taken: a proxy reload after this is the one a command's edit caused."""
+    global LOCKED_AT
+    LOCKED_AT = time.time()
+
+
 class AdminLock:
     """Blocking exclusive lock shared with install.sh and uninstall.sh (flock on one file).
 
@@ -169,9 +180,11 @@ class AdminLock:
                 raise Refused("the inherited lock descriptor is not held by the caller; "
                               "another claude-rotate command is running")
             self.fd, self.inherited = fd, True
+            mark_locked()
             return self
         self.fd = os.open(LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         fcntl.flock(self.fd, fcntl.LOCK_EX)
+        mark_locked()
         return self
 
     def __exit__(self, *exc):
@@ -467,6 +480,8 @@ def activate(cfg: dict, *, restart: bool = True, what: str = "change") -> int:
     ready, problems, warnings = readiness(cfg)
     for warning in warnings:
         out(f"warning: {warning}")
+    if CONTAINER:
+        return activate_container(cfg, restart, ready, problems, what)
     if not restart:
         out(f"{what} stored; the running service loads it within its reload_poll_s (5 s by default), "
             f"or now with: sudo systemctl reload {UNIT_NAME}")
@@ -509,15 +524,39 @@ def reload_service(cfg: dict, what: str) -> int:
             + (f": {detail}" if detail else "")
             + f"; a unit installed before reloads existed needs install.sh run again; {journal_hint()}")
         return EXIT_NOT_LIVE
+    return confirm_reload(cfg, what, started, RELOAD_WAIT_S, "reload sent but not confirmed", journal_hint())
+
+
+def activate_container(cfg: dict, restart: bool, ready: bool, problems: list, what: str) -> int:
+    """No unit and no signal: the proxy picks the edit up within its reload_poll_s, and
+    GET /rotate/status says whether it accepted it."""
+    if not restart:
+        out(f"{what} stored; the running proxy loads it within its reload_poll_s (5 s by default)")
+        return EXIT_OK
+    if not ready:
+        out(f"{what} stored; setup needed before the proxy can load it")
+        for problem in problems:
+            out(f"  - {problem}")
+        return EXIT_SETUP_NEEDED
+    poll = cfg.get("reload_poll_s", 5)
+    poll = poll if isinstance(poll, (int, float)) and not isinstance(poll, bool) and poll >= 0 else 5
+    return confirm_reload(cfg, what, LOCKED_AT, poll + RELOAD_WAIT_S, "reload not confirmed",
+                          "check the proxy: docker compose logs claude-rotate")
+
+
+def confirm_reload(cfg: dict, what: str, started: float, wait_s: float, unconfirmed: str, hint: str) -> int:
+    """Poll the proxy's /rotate/status until its last_reload passes `started`, then report
+    whether it accepted the new configuration."""
     problem = "no answer"
+    deadline = time.time() + wait_s
     while True:
         live, problem = live_status(cfg)
         reload_state = (live or {}).get("config") or {}
         if (reload_state.get("last_reload") or 0) >= started:
             break
-        if time.time() >= started + RELOAD_WAIT_S:
-            out(f"{what} stored; reload sent but not confirmed ({problem or 'no reload reported'}); "
-                f"{journal_hint()}")
+        if time.time() >= deadline:
+            out(f"{what} stored; {unconfirmed} ({problem or 'no reload reported'}); "
+                f"{hint}")
             return EXIT_NOT_LIVE
         time.sleep(0.25)
     if reload_state.get("error"):
@@ -906,8 +945,6 @@ def choose_rotate_target(cfg: dict, state, requested):
 
 
 def cmd_rotate(args) -> int:
-    if CONTAINER:
-        raise Refused("stop the proxy first; rotate rewrites state.json")
     with AdminLock():
         check_fixed_tree()
         cfg = load_config()
@@ -916,7 +953,10 @@ def cmd_rotate(args) -> int:
         if target is None:
             out(f"account '{current}' is already the active account; nothing changed")
             return EXIT_OK
-        managed = systemctl_available() and unit_installed()
+        if CONTAINER and live_status(cfg)[0] is not None:
+            # A running proxy rewrites state.json from memory: it must be stopped first.
+            raise Refused("stop the proxy first: docker compose stop claude-rotate; nothing changed")
+        managed = not CONTAINER and systemctl_available() and unit_installed()
         stopped_by_us = False
 
         def restore():
@@ -978,8 +1018,9 @@ def cmd_rotate(args) -> int:
             err(f"error: unexpected failure before the state was written ({restore()})")
             raise
         if not stopped_by_us:
-            out(f"active account set to '{target}' (was '{previous}'); the service is not running, "
-                "so it applies at the next start")
+            out(f"active account set to '{target}' (was '{previous}'); "
+                + ("the proxy did not answer" if CONTAINER else "the service is not running")
+                + ", so it applies at the next start")
             return EXIT_OK
         note = restore()
         if note != "service started again":
@@ -998,8 +1039,11 @@ def live_status(cfg: dict):
     keys = [v for v in cfg["devices"].values() if isinstance(v, str) and v.strip() and PLACEHOLDER not in v]
     if not keys:
         return None, "no device key available for an authenticated query"
-    host, port = bind_address(cfg)
-    url = f"http://{host}:{port}/rotate/status"
+    if CONTAINER:
+        url = f"{ADMIN_URL}/rotate/status"
+    else:
+        host, port = bind_address(cfg)
+        url = f"http://{host}:{port}/rotate/status"
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {keys[0]}"})
     try:
         with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310 loopback only
@@ -1023,7 +1067,10 @@ def release_info():
 
 
 def collect_status():
-    report = {"unit_installed": unit_installed(), "unit": unit_properties(), **release_info()}
+    if CONTAINER:  # no unit and no release tree to read
+        report = {"unit_installed": False, "unit": {}, "current": None, "release": None}
+    else:
+        report = {"unit_installed": unit_installed(), "unit": unit_properties(), **release_info()}
     try:
         cfg = load_config()
     except Refused as exc:
@@ -1068,7 +1115,7 @@ def collect_status():
                          for k, v in cfg["devices"].items()]
     report["recent_events"] = ((state or {}).get("events") or [])[-5:]
     report["live"] = None
-    if report["unit"].get("ActiveState") == "active":
+    if CONTAINER or report["unit"].get("ActiveState") == "active":
         live, problem = live_status(cfg)
         if live is not None:
             report["live"] = {"active_account": live.get("active_account"),
@@ -1097,11 +1144,12 @@ def cmd_status(args) -> int:
         out(json.dumps(report, indent=2, default=str))
         return EXIT_OK
     unit = report.get("unit", {})
-    out(f"service: {'unit installed' if report['unit_installed'] else 'unit NOT installed'}; "
-        f"state {unit.get('ActiveState', 'unknown')}/{unit.get('SubState', '?')}; "
-        f"enabled: {unit.get('UnitFileState', 'unknown')}; restarts: {unit.get('NRestarts', '?')}")
-    out(f"release: {report.get('current') or 'none'}"
-        + (f" (installed {report['release'].get('installed_at')})" if report.get("release") else ""))
+    if not CONTAINER:
+        out(f"service: {'unit installed' if report['unit_installed'] else 'unit NOT installed'}; "
+            f"state {unit.get('ActiveState', 'unknown')}/{unit.get('SubState', '?')}; "
+            f"enabled: {unit.get('UnitFileState', 'unknown')}; restarts: {unit.get('NRestarts', '?')}")
+        out(f"release: {report.get('current') or 'none'}"
+            + (f" (installed {report['release'].get('installed_at')})" if report.get("release") else ""))
     if "config_error" in report:
         out(f"config: ERROR {report['config_error']}")
         return EXIT_REFUSED

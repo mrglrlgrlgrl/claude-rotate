@@ -1023,7 +1023,7 @@ def test_container_mode_adds_a_token_and_a_device_as_the_caller(f):
     assert r.returncode == 3, r
     assert mode(config) == 0o640 and mode(tokens) == 0o750, r
     r = f.run("add-token", "acct-1", input=TOKEN, env=env)
-    assert r.returncode == 2 and "nothing is live" in r.stdout, r  # stored; there is no unit to restart
+    assert r.returncode == 3 and "setup needed" in r.stdout, r  # stored; no device yet, so nothing to load it
     assert TOKEN not in r.stdout + r.stderr
     token_file = tokens / "acct-1.token"
     assert token_file.read_text() == TOKEN
@@ -1032,8 +1032,8 @@ def test_container_mode_adds_a_token_and_a_device_as_the_caller(f):
     cfg = json.loads(config.read_text())
     assert cfg["accounts"] == [{"name": "acct-1", "token_file": "tokens/acct-1.token"}]
     assert mode(config) == 0o640 and os.lstat(config).st_uid == os.getuid()
-    r = f.run("add-user", "laptop", env=env)
-    assert r.returncode == 2, r
+    r = f.run("add-user", "laptop", "--no-restart", env=env)
+    assert r.returncode == 0 and "reload_poll_s" in r.stdout, r
     assert list(json.loads(config.read_text())["devices"]) == ["laptop"], r
     # The lock lives next to the state file, and nothing is made under the host paths.
     assert (base / "data/admin.lock").is_file() and mode(base / "data/admin.lock") == 0o600
@@ -1047,7 +1047,7 @@ def test_container_mode_adds_a_token_and_a_device_as_the_caller(f):
     assert mode(token_file) == 0o600
 
 
-def test_container_mode_refuses_a_symlinked_config_and_rotate(f):
+def test_container_mode_refuses_a_symlinked_config(f):
     base, env = container_env(f, "container-refuse")
     config = base / "config/config.json"
     r = f.run("init", env=env)
@@ -1064,11 +1064,141 @@ def test_container_mode_refuses_a_symlinked_config_and_rotate(f):
     elsewhere.rename(config)
     for name, token in (("acct-1", TOKEN), ("acct-2", TOKEN.replace("0001", "0002"))):
         assert f.run("add-token", name, "--no-restart", input=token, env=env).returncode == 0
-    state_before = (base / "data/state.json").exists()
-    r = f.run("rotate", "acct-2", env=env)
-    assert r.returncode == 1 and "stop the proxy first; rotate rewrites state.json" in r.stderr, r
-    assert (base / "data/state.json").exists() == state_before
     assert f.calls() == []
+
+
+class ProxyStub:
+    """A stand-in proxy for container mode, on its own port. It reports a config reload as
+    having just happened, with `error` as the rejection text, and records every request."""
+
+    def __init__(self, error=None):
+        outer = self
+        self.error, self.requests = error, []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                outer.requests.append(("GET", self.path, self.headers.get("Authorization")))
+                now = time.time()
+                body = json.dumps({"active_account": "acct-1", "accounts": {}, "config": {
+                    "loaded_at": now, "last_reload": now, "error": outer.error, "restart_needed": []}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def other(self):
+                outer.requests.append((self.command, self.path, None))
+                self.send_response(405)
+                self.end_headers()
+
+            do_POST = do_PUT = do_DELETE = do_PATCH = other
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def unused_url():
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()  # nothing listens here now
+    return f"http://127.0.0.1:{port}"
+
+
+def container_ready(f, name, url):
+    """A container-mode tree with two accounts and a device, a reload wait of 5 s, and `url` as the proxy."""
+    base, env = container_env(f, name)
+    env["CLAUDE_ROTATE_ADMIN_URL"] = url
+    assert f.run("init", env=env).returncode == 3
+    for acct, token in (("acct-1", TOKEN), ("acct-2", TOKEN.replace("0001", "0002"))):
+        assert f.run("add-token", acct, "--no-restart", input=token, env=env).returncode == 0
+    assert f.run("add-user", "laptop", "--no-restart", env=env).returncode == 0
+    config = base / "config/config.json"
+    cfg = json.loads(config.read_text())
+    cfg["reload_poll_s"] = 0
+    config.write_text(json.dumps(cfg))
+    return base, env
+
+
+def test_container_mode_confirms_a_reload_through_the_status_url(f):
+    (f.fake / "fail-all").write_text("")  # any systemctl call in container mode would fail loudly
+    with ProxyStub() as proxy:
+        base, env = container_ready(f, "container-live", proxy.url)
+        proxy.requests.clear()
+        r = f.run("add-user", "phone", env=env)
+        assert r.returncode == 0 and "is live" in r.stdout, r
+        assert "phone" in json.loads((base / "config/config.json").read_text())["devices"]
+        # The only traffic to the proxy is the read-only status query, with a device key.
+        assert proxy.requests and all(q[0] == "GET" and q[1] == "/rotate/status" for q in proxy.requests), proxy.requests
+        assert proxy.requests[0][2].startswith("Bearer dev-")
+    assert f.calls() == [], f.calls()
+    (f.fake / "fail-all").unlink()
+
+
+def test_container_mode_reports_a_refused_reload_and_a_silent_proxy(f):
+    (f.fake / "fail-all").write_text("")
+    with ProxyStub(error="placeholder device key(s) in config.json") as proxy:
+        base, env = container_ready(f, "container-refused", proxy.url)
+        r = f.run("add-user", "phone", env=env)
+        assert r.returncode == 2, r
+        assert "NOT live" in r.stdout and "placeholder device key(s) in config.json" in r.stdout, r
+        assert "is live" not in r.stdout
+        assert "phone" in json.loads((base / "config/config.json").read_text())["devices"]
+    base, env = container_ready(f, "container-silent", unused_url())
+    started = time.time()
+    r = f.run("add-user", "phone", env=env)
+    assert r.returncode == 2 and "not confirmed" in r.stdout and "is live" not in r.stdout, r
+    assert "docker compose logs claude-rotate" in r.stdout and time.time() - started >= 4.5, r
+    assert "phone" in json.loads((base / "config/config.json").read_text())["devices"]
+    assert f.calls() == [], f.calls()
+    (f.fake / "fail-all").unlink()
+
+
+def test_container_mode_rotate_needs_the_proxy_stopped(f):
+    (f.fake / "fail-all").write_text("")
+    with ProxyStub() as proxy:
+        base, env = container_ready(f, "container-rotate", proxy.url)
+        state = base / "data/state.json"
+        r = f.run("rotate", "acct-2", env=env)
+        assert r.returncode == 1 and "stop the proxy first: docker compose stop claude-rotate" in r.stderr, r
+        assert not state.exists()
+        assert all(q[0] == "GET" and q[1] == "/rotate/status" for q in proxy.requests), proxy.requests
+    # The proxy is gone: the switch is written for its next start.
+    env["CLAUDE_ROTATE_ADMIN_URL"] = unused_url()
+    r = f.run("rotate", "acct-2", env=env)
+    assert r.returncode == 0 and "applies at the next start" in r.stdout, r
+    saved = json.loads(state.read_text())
+    assert saved["active_account"] == "acct-2"
+    event = saved["events"][-1]
+    assert event["type"] == "switch" and event["reason"] == "manual" and event["to"] == "acct-2", event
+    assert f.calls() == [], f.calls()
+    (f.fake / "fail-all").unlink()
+
+
+def test_container_mode_status_skips_the_unit_and_queries_the_url(f):
+    (f.fake / "fail-all").write_text("")
+    with ProxyStub() as proxy:
+        base, env = container_ready(f, "container-status", proxy.url)
+        r = f.run("status", env=env)
+        assert r.returncode == 0, r
+        assert "live /rotate/status: reachable" in r.stdout and "token file present" in r.stdout, r
+        assert "service:" not in r.stdout and "release:" not in r.stdout and "unit" not in r.stdout, r
+        assert proxy.requests and all(q[:2] == ("GET", "/rotate/status") for q in proxy.requests), proxy.requests
+    r = f.run("status", env=dict(env, CLAUDE_ROTATE_ADMIN_URL=unused_url()))
+    assert r.returncode == 0 and "live /rotate/status: unavailable" in r.stdout, r
+    assert f.calls() == [], f.calls()
+    (f.fake / "fail-all").unlink()
 
 
 def test_service_identity_missing_is_refused_in_process(f):
@@ -1726,7 +1856,11 @@ def main():
              "test_add_token_from_a_terminal_prints_the_hint_and_hides_the_typed_token",
              "test_check_refuses_a_bad_config_and_changes_nothing", "test_refuses_without_root_or_a_prefix",
              "test_container_mode_adds_a_token_and_a_device_as_the_caller",
-             "test_container_mode_refuses_a_symlinked_config_and_rotate",
+             "test_container_mode_refuses_a_symlinked_config",
+             "test_container_mode_confirms_a_reload_through_the_status_url",
+             "test_container_mode_reports_a_refused_reload_and_a_silent_proxy",
+             "test_container_mode_rotate_needs_the_proxy_stopped",
+             "test_container_mode_status_skips_the_unit_and_queries_the_url",
              "test_service_identity_missing_is_refused_in_process",
              "test_symlinked_ancestor_of_a_managed_path_is_refused",
              "test_set_account", "test_menu",
