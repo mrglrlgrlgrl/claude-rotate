@@ -373,6 +373,16 @@ rate-limit headers:
   now (3.5 days on a phone) and scrolls back to the first sample. Hover or tap
   for values; **Table** shows the same data as a table. History is sampled
   every 30 min into `usage_history.json` next to `state.json` and kept 14 days.
+  One line under the chart gives the weekly demand: the rate over the last
+  7 days of history (all of it while there is less), as a share of one weekly
+  quota per week, and the number of weight-1 accounts that covers it next to
+  your combined capacity. A 30-min stretch counts only when an account was
+  available at its start, meaning under both its weekly allowance at that time
+  (`weekly_cap` and `weekly_pacing`) and `hard_limit`, so time when every
+  account had run out does not understate demand. Accounts are counted as
+  weight-1 because weight is relative. With under 6 counted hours the line
+  gives a note instead. Limit: the history holds no 5h data, so time when
+  every account was 5h-limited still counts as available.
 - **Devices**: every registered device (online status, last seen, last model)
   and every removed device that still has history, with usage over 24 h, 7 d,
   30 d and all time plus a 30-day cost trend. 7 d and 30 d are calendar days,
@@ -394,7 +404,7 @@ The 24 h figures come from the audit log. Longer periods come from
 minute. On first start it is rebuilt once from `audit.jsonl` and its rotated
 copies, so all time reaches back as far as those logs do.
 
-JSON endpoints: `/rotate/status` (accounts, each with its `private_to` owners as a list or null, its `weekly_cap`, `weekly_pacing` and `weekly_allowance` (the weekly use allowed now, or null with neither setting), + switch events) and
+JSON endpoints: `/rotate/status` (accounts, each with its `private_to` owners as a list or null, its `weekly_cap`, `weekly_pacing` and `weekly_allowance` (the weekly use allowed now, or null with neither setting), + switch events, + `weekly.demand`, the weekly demand figures) and
 `/rotate/stats` (rollups, alerts and the longer `periods`), same `?key=` or `Authorization: Bearer`
 auth. Audit trail: `logs/audit.jsonl`, one JSON record per request.
 

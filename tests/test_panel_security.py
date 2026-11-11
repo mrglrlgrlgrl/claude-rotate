@@ -27,7 +27,7 @@ const value = '<mark data-audit="marker">&\'"</mark>';
 const elements = {}, urls = [], replaced = [];
 const usage = {requests:1,input_tokens:1,output_tokens:1,cache_read:0,cache_write:0,cost_usd:1};
 const stats = {devices:{[value]:{last_model:value,last_account:value,key_suffix:value}},alerts:[{level:'warn',text:value}],by_device:{[value]:usage},by_model:{[value]:usage},by_account:{[value]:usage},periods:{since:value,'7d':{device:{[value]:usage},model:{[value]:usage}},'30d':{device:{[value]:usage},model:{[value]:usage}},all:{device:{[value]:usage,[value+'-gone']:usage},model:{[value]:usage}},trend:{[value]:[0,1,2]}}};
-const status = {accounts:{[value]:{priority:100,private_to:[value,value+"-2"],reset_5h:1793883600,reset_7d:1793883600,reset_5h_in_min:30,reset_7d_in_h:50}},active_account:value,strategy:value,switch_threshold:.8,switch_threshold_7d:.98,recent_events:[{ts:value,from:value,to:value,reason:value}],weekly:{series:[[0,0,100],[3600,10,100]],projection:[[3600,10,100],[7200,100,100]],rate_per_day:5,eta:7200,back:9000,back_account:value,capacity:200}};
+const status = {accounts:{[value]:{priority:100,private_to:[value,value+"-2"],reset_5h:1793883600,reset_7d:1793883600,reset_5h_in_min:30,reset_7d_in_h:50}},active_account:value,strategy:value,switch_threshold:.8,switch_threshold_7d:.98,recent_events:[{ts:value,from:value,to:value,reason:value}],weekly:{series:[[0,0,100],[3600,10,100]],projection:[[3600,10,100],[7200,100,100]],rate_per_day:5,eta:7200,back:9000,back_account:value,capacity:200,demand:{rate_per_day:58.5,measured_h:61.2,window_h:72,week_pct:410.4,capacity_pct:400,accounts_needed:value,shortfall_pct:10.4,note:null}}};
 const makeStorage=(init)=>{const m=new Map(Object.entries(init||{}));return {m,getItem:k=>m.has(k)?m.get(k):null,setItem:(k,v)=>{m.set(k,String(v))},removeItem:k=>{m.delete(k)}}};
 const makeContext=(search,storage,code)=>{
   const els={}, calls=[], repl=[];
@@ -45,6 +45,11 @@ const context = vm.createContext({URL,URLSearchParams,location:{search:'?key=fak
   assert(urls.every(({url,opts})=>!url.includes('key=')&&opts.headers.Authorization==='Bearer fake-viewer-key'));
   assert(elements.weekly.innerHTML.includes('class="hit"'),'shortfall band not drawn');
   assert(elements.devices.innerHTML.includes('removed'),'removed device not listed');
+  assert(elements.weekly.innerHTML.includes('Over the last 3.0 days (61 h with an account available), demand is about 410% of one weekly quota per week: &lt;mark data-audit=&quot;marker&quot;&gt;&amp;&#39;&quot;&lt;/mark&gt; weight-1 accounts; you have 400%.'),'demand line missing or unescaped');
+  status.weekly.demand={rate_per_day:null,measured_h:null,window_h:null,week_pct:null,capacity_pct:null,accounts_needed:null,shortfall_pct:null,note:value};
+  await vm.runInContext('refresh()',context,{timeout:1000});
+  assert(elements.weekly.innerHTML.includes('<div class="sentence">&lt;mark') && !elements.weekly.innerHTML.includes('<mark'),'demand note missing or unescaped');
+  assert(!elements.weekly.innerHTML.includes('weight-1'),'null demand must show the note only');
   for(const id of ['pills','accounts','weekly','alerts','devices','models','by-account','events','model-pie','account-pie']){
     assert(!elements[id].innerHTML.includes('<mark'),id+' contains raw markup');
     assert(elements[id].innerHTML.includes('&lt;mark'),id+' lost escaped text');

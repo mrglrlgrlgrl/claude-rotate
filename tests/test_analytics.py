@@ -320,6 +320,86 @@ R.HISTORY = []
 check("no rate without an hour of history", R.weekly_outlook(now)["eta"] is None
       and "not enough history" in R.weekly_outlook(now)["note"])
 
+# --- weekly demand: the rate over stretches when an account could serve ---
+R1, R2 = now + 20 * H, now + 20 * H + 7 * 86400
+R.ACCOUNTS = {"a": {"name": "a", "weekly_cap": 0.3}, "b": {"name": "b", "weekly_cap": 0.3}}
+# first 12 h: both accounts over their 0.3 allowance (rising 0.01/h each); then a new
+# week at 0, rising 0.02/h each, under the allowance
+R.HISTORY = [{"ts": now - (24 - i) * H, "accounts": (
+    {n: [0.40 + 0.01 * i, R1] for n in "ab"} if i < 12 else {n: [0.02 * (i - 12), R2] for n in "ab"})}
+    for i in range(24)]
+R.STATE = {"active_account": "a", "events": [], "accounts": {
+    n: {"util_7d": 0.24, "reset_7d": R2} for n in "ab"}}
+d = R.weekly_demand(now)
+check("an hour when every account is over its allowance is left out of the rate",
+      d["rate_per_day"] == 96.0 and d["measured_h"] == 12.0 and d["window_h"] == 24.0)
+check("week_pct is 7 days of the rate; capacity sums weight x weekly_cap",
+      d["week_pct"] == 672.0 and d["capacity_pct"] == 60.0 and d["accounts_needed"] == 7
+      and d["shortfall_pct"] == 612.0 and d["note"] is None)
+R.ACCOUNTS = {n: {"name": n} for n in "ab"}
+check("no weekly_cap means capacity 100% per account", R.weekly_demand(now)["capacity_pct"] == 200.0)
+R.ACCOUNTS = {n: {"name": n, "weekly_cap": 0.5} for n in "ab"}
+check("a 7-day cap of 0.5 halves capacity_pct", R.weekly_demand(now)["capacity_pct"] == 100.0)
+
+# paced out by weekly_pacing: allowance at the sample's time, not now
+R.ACCOUNTS = {n: {"name": n, "weekly_pacing": True, "pace_lookahead": "0m"} for n in "ab"}
+R.HISTORY = [{"ts": now - (24 - i) * H, "accounts": {n: [0.60, now + 3.5 * 86400] for n in "ab"}}
+             for i in range(12)] \
+    + [{"ts": now - (12 - i) * H, "accounts": {n: [0.0, now + 6 * 86400] for n in "ab"}}
+       for i in range(12)]
+R.STATE = {"active_account": "a", "events": [], "accounts": {
+    n: {"util_7d": 0.0, "reset_7d": now + 6 * 86400} for n in "ab"}}
+check("pacing allowance is taken at the sample's time",
+      R.weekly_demand(now)["measured_h"] == 12.0)
+R.ACCOUNTS = {n: {"name": n} for n in "ab"}
+
+# 2.5 days of history is used whole
+R.HISTORY = [{"ts": now - (60 - i) * H, "accounts": {n: [0.01 * i, now + 100 * H] for n in "ab"}}
+             for i in range(60)]
+R.STATE = {"active_account": "a", "events": [], "accounts": {
+    n: {"util_7d": 0.60, "reset_7d": now + 100 * H} for n in "ab"}}
+d = R.weekly_demand(now)
+check("a history shorter than 7 days is used whole",
+      d["window_h"] == 60.0 and d["measured_h"] == 60.0 and d["rate_per_day"] == 48.0)
+# only the last 7 days count
+R.HISTORY = [{"ts": now - (240 - i) * H, "accounts": {"a": [0.0, now + 100 * H]}}
+             for i in range(60)] + [
+    {"ts": now - (24 - i) * H, "accounts": {"a": [0.01 * i, now + 100 * H]}} for i in range(24)]
+R.ACCOUNTS = {"a": {"name": "a"}}
+R.STATE = {"active_account": "a", "events": [], "accounts": {
+    "a": {"util_7d": 0.24, "reset_7d": now + 100 * H}}}
+d = R.weekly_demand(now)
+check("older history than 7 days is outside the window",
+      d["window_h"] == 24.0 and d["rate_per_day"] == 24.0)
+
+# under 6 counted hours: nulls and the note
+R.HISTORY = [{"ts": now - (5 - i) * H, "accounts": {"a": [0.01 * i, now + 100 * H]}} for i in range(5)]
+d = R.weekly_demand(now)
+check("under 6 counted hours gives the note and nulls",
+      d["note"] == "not enough history with an account available yet"
+      and all(d[k] is None for k in ("rate_per_day", "measured_h", "window_h", "week_pct",
+                                      "capacity_pct", "accounts_needed", "shortfall_pct")))
+R.HISTORY = []
+check("no history gives the note", R.weekly_demand(now)["week_pct"] is None)
+
+
+def demand_for(step):
+    R.HISTORY = [{"ts": now - (24 - i) * H, "accounts": {"a": [step * i, now + 100 * H]}}
+                 for i in range(24)]
+    R.STATE = {"active_account": "a", "events": [], "accounts": {
+        "a": {"util_7d": step * 24, "reset_7d": now + 100 * H}}}
+    return R.weekly_demand(now)
+
+
+d = demand_for(0.0239)
+check("accounts_needed rounds up: week_pct 401 gives 5", 401 <= d["week_pct"] < 402
+      and d["accounts_needed"] == 5)
+d = demand_for(0.0237)
+check("week_pct just under 400 gives 4 accounts", 398 <= d["week_pct"] < 400
+      and d["accounts_needed"] == 4)
+check("cap_allowance with no extra arguments is unchanged",
+      R.cap_allowance("a") == 1.0)
+
 R.HISTORY_PATH = tmp / "usage_history.json"
 R.HISTORY = [{"ts": now - 15 * 86400, "accounts": {"a": [0.1, old_a]}}]
 R.record_history(now)

@@ -28,6 +28,7 @@ GET /rotate/status (device-key auth) returns live state for the admin page.
 
 import asyncio
 import json
+import math
 import os
 import re
 import signal
@@ -481,14 +482,18 @@ def pace_lookahead_s(name: str) -> float:
     return PACE_LOOKAHEAD_S if own is None else own
 
 
-def cap_allowance(name: str) -> float:
+def cap_allowance(name: str, reset: float | None = None, now: float | None = None) -> float:
     """Weekly use an account may reach now. Without weekly_pacing this is
     weekly_cap, flat. With it, weekly_cap (1.0 when unset) scaled by how much
     of the week has passed, counted from `lookahead` ahead. It reaches the cap
     at lookahead before the weekly reset and never exceeds it. An unknown or
-    passed reset gives the cap."""
+    passed reset gives the cap. `reset` and `now` default to the account's
+    state reset and the clock; pass both to get the allowance at a past sample."""
     cap = ACCOUNTS[name].get("weekly_cap", 1.0)
-    reset, now = STATE["accounts"].get(name, {}).get("reset_7d"), time.time()
+    if reset is None:
+        reset = STATE["accounts"].get(name, {}).get("reset_7d")
+    if now is None:
+        now = time.time()
     if not ACCOUNTS[name].get("weekly_pacing") or not reset or now >= reset:
         return cap
     lookahead = pace_lookahead_s(name)
@@ -1117,6 +1122,42 @@ def weekly_outlook(now: float) -> dict:
     return out
 
 
+DEMAND_DAYS, DEMAND_MIN_S = 7, 6 * 3600
+
+
+def weekly_demand(now: float) -> dict:
+    """Weekly demand over the last DEMAND_DAYS (all history while shorter), in % of
+    one weight-1 weekly quota. A stretch between two samples counts when, at its
+    first sample, an enabled account was under both its allowance then and
+    HARD_LIMIT, so time when nothing could serve does not understate the rate.
+    The history holds no 5h data: time when every account was 5h-limited still counts."""
+    samples = HISTORY + [{"ts": now, "accounts": weekly_snapshot()}]
+    pairs = [(s, p) for s, p in zip(samples, weekly_series(now)) if p[0] >= now - DEMAND_DAYS * 86400]
+    counted = rise = 0.0
+    for (sample, a), (_, b) in zip(pairs, pairs[1:]):
+        if any(n in ACCOUNTS and not disabled(n) and u < HARD_LIMIT
+               and u < cap_allowance(n, reset, sample["ts"])
+               for n, (u, reset) in sample["accounts"].items()):
+            counted += b[0] - a[0]
+            rise += b[3] - a[3]
+    out = dict.fromkeys(("rate_per_day", "measured_h", "window_h", "week_pct",
+                         "capacity_pct", "accounts_needed", "shortfall_pct"))
+    if counted < DEMAND_MIN_S:
+        out["note"] = "not enough history with an account available yet"
+        return out
+    rate = rise / counted * 86400
+    week = 7 * rate
+    capacity = sum(weight(n) * ACCOUNTS[n].get("weekly_cap", 1.0) for n in ACCOUNTS
+                   if not disabled(n)) * 100
+    out.update(rate_per_day=round(rate, 1), measured_h=round(counted / 3600, 1),
+               window_h=round((pairs[-1][1][0] - pairs[0][1][0]) / 3600, 1),
+               week_pct=round(week, 1), capacity_pct=round(capacity, 1),
+               accounts_needed=math.ceil(round(week, 1) / 100),
+               shortfall_pct=round(max(0.0, week - capacity), 1))
+    out["note"] = None
+    return out
+
+
 def usage_from_sse(text: str, sink: dict) -> None:
     for line in text.splitlines():
         if line.startswith("data:") and '"usage"' in line:
@@ -1181,7 +1222,7 @@ async def rotate_status(request: Request):
         "recent_events": STATE["events"][-10:],
         "storage_errors": STORAGE_ERRORS,
         "config": CONFIG_STATUS,
-        "weekly": weekly_outlook(now),
+        "weekly": {**weekly_outlook(now), "demand": weekly_demand(now)},
     }
 
 
@@ -1704,7 +1745,14 @@ function weekly(p){
   for(const [i,c,dy] of [[1,'var(--s1)',18],[2,'var(--s2)',-9]])  // usage label below its dot, limit above
     s+=`<circle cx="${X(now)}" cy="${Y(last[i])}" r="4.5" fill="${c}" stroke="var(--surface)" stroke-width="2"/><text x="${X(now)-8}" y="${Y(last[i])+dy}" text-anchor="end" style="fill:var(--ink)">${Math.round(last[i])}%</text>`;
   return `<div class="wk">${y}</svg><div class="wk-scroll" id="wk-scroll">${s}<line id="xh" x1="0" x2="0" y1="${T}" y2="${Hh-B}" stroke="var(--ink2)" opacity="0"/></svg></div></div>`+sentence(p,now)}
+function demandLine(d){
+  if(!d) return '';
+  if(d.week_pct==null) return `<div class="sentence">${esc(d.note)}</div>`;
+  const n=d.accounts_needed;
+  return `<div class="sentence">Over the last ${esc((d.window_h/24).toFixed(1))} days (${esc(Math.round(d.measured_h))} h with an account available), demand is about ${esc(Math.round(d.week_pct))}% of one weekly quota per week: ${esc(n)} weight-1 account${n===1?'':'s'}; you have ${esc(Math.round(d.capacity_pct))}%.</div>`}
 function sentence(p,now){
+  return sentence1(p,now)+demandLine(p.demand)}
+function sentence1(p,now){
   const rate=p.rate_per_day==null?'':`At the current rate (${p.rate_per_day}% of a weekly quota per day), `;
   if(p.eta) return `<div class="sentence">${rate}every account ${p.eta<=now+60?'is at 100% now':'is spent at <b>'+esc(when(p.eta))+'</b>'}; quota returns at ${esc(when(p.back))} when ${esc(p.back_account)} resets.</div>`;
   return `<div class="sentence">${p.note?esc(p.note):rate+'no shortfall in the next 7.5 days.'}</div>`}
