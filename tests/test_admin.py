@@ -1005,6 +1005,72 @@ def test_refuses_without_root_or_a_prefix(f):
     assert f.calls() == []
 
 
+def container_env(f, name):
+    """A container-mode environment: the two paths the proxy reads, in a fresh tree, and no prefix."""
+    base = f.tmp / name
+    (base / "config").mkdir(parents=True)
+    (base / "data").mkdir()
+    env = {k: v for k, v in f.env.items() if k != "CLAUDE_ROTATE_PREFIX"}
+    env.update(CLAUDE_ROTATE_ADMIN_MODE="container", CLAUDE_ROTATE_CONFIG=str(base / "config/config.json"),
+               CLAUDE_ROTATE_STATE=str(base / "data/state.json"))
+    return base, env
+
+
+def test_container_mode_adds_a_token_and_a_device_as_the_caller(f):
+    base, env = container_env(f, "container-add")
+    config, tokens = base / "config/config.json", base / "config/tokens"
+    r = f.run("init", env=env)
+    assert r.returncode == 3, r
+    assert mode(config) == 0o640 and mode(tokens) == 0o750, r
+    r = f.run("add-token", "acct-1", input=TOKEN, env=env)
+    assert r.returncode == 2 and "nothing is live" in r.stdout, r  # stored; there is no unit to restart
+    assert TOKEN not in r.stdout + r.stderr
+    token_file = tokens / "acct-1.token"
+    assert token_file.read_text() == TOKEN
+    assert mode(token_file) == 0o600 and os.lstat(token_file).st_uid == os.getuid(), r
+    assert os.lstat(token_file).st_gid == os.getgid()
+    cfg = json.loads(config.read_text())
+    assert cfg["accounts"] == [{"name": "acct-1", "token_file": "tokens/acct-1.token"}]
+    assert mode(config) == 0o640 and os.lstat(config).st_uid == os.getuid()
+    r = f.run("add-user", "laptop", env=env)
+    assert r.returncode == 2, r
+    assert list(json.loads(config.read_text())["devices"]) == ["laptop"], r
+    # The lock lives next to the state file, and nothing is made under the host paths.
+    assert (base / "data/admin.lock").is_file() and mode(base / "data/admin.lock") == 0o600
+    assert f.calls() == []
+    # Renewal keeps the mode.
+    r = f.run("add-token", "acct-1", "--no-restart", input=TOKEN.replace("0001", "0002"), env=env)
+    assert r.returncode == 0 and mode(token_file) == 0o600, r
+    # An init pass normalizes a loose token to the container mode, not the host one.
+    token_file.chmod(0o644)
+    f.run("init", env=env)
+    assert mode(token_file) == 0o600
+
+
+def test_container_mode_refuses_a_symlinked_config_and_rotate(f):
+    base, env = container_env(f, "container-refuse")
+    config = base / "config/config.json"
+    r = f.run("init", env=env)
+    assert r.returncode == 3, r
+    elsewhere = base / "elsewhere.json"
+    elsewhere.write_text(config.read_text())
+    config.unlink()
+    config.symlink_to(elsewhere)
+    before = elsewhere.read_bytes()
+    r = f.run("add-user", "laptop", env=env)
+    assert r.returncode == 1 and "is a symbolic link" in r.stderr, r
+    assert elsewhere.read_bytes() == before
+    config.unlink()
+    elsewhere.rename(config)
+    for name, token in (("acct-1", TOKEN), ("acct-2", TOKEN.replace("0001", "0002"))):
+        assert f.run("add-token", name, "--no-restart", input=token, env=env).returncode == 0
+    state_before = (base / "data/state.json").exists()
+    r = f.run("rotate", "acct-2", env=env)
+    assert r.returncode == 1 and "stop the proxy first; rotate rewrites state.json" in r.stderr, r
+    assert (base / "data/state.json").exists() == state_before
+    assert f.calls() == []
+
+
 def test_service_identity_missing_is_refused_in_process(f):
     with admin_in_process(f) as mod:
         found = mock.Mock(pw_uid=1, gr_gid=1)
@@ -1659,6 +1725,8 @@ def main():
              "test_add_token_refuses_a_token_file_that_is_not_a_regular_file",
              "test_add_token_from_a_terminal_prints_the_hint_and_hides_the_typed_token",
              "test_check_refuses_a_bad_config_and_changes_nothing", "test_refuses_without_root_or_a_prefix",
+             "test_container_mode_adds_a_token_and_a_device_as_the_caller",
+             "test_container_mode_refuses_a_symlinked_config_and_rotate",
              "test_service_identity_missing_is_refused_in_process",
              "test_symlinked_ancestor_of_a_managed_path_is_refused",
              "test_set_account", "test_menu",

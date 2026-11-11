@@ -38,11 +38,25 @@ def P(path: str) -> Path:
     return Path(PREFIX + path) if PREFIX else Path(path)
 
 
-ETC = P("/etc/claude-rotate")
-CONFIG = ETC / "config.json"
+# CLAUDE_ROTATE_ADMIN_MODE=container manages a claude-rotate that runs in a container, as the
+# calling user and without systemd: the config and state paths come from the same
+# CLAUDE_ROTATE_CONFIG and CLAUDE_ROTATE_STATE the proxy reads, and no root or service
+# account is needed.
+CONTAINER = os.environ.get("CLAUDE_ROTATE_ADMIN_MODE") == "container"
+
+if CONTAINER:
+    CONFIG = P(os.environ.get("CLAUDE_ROTATE_CONFIG", "/config/config.json"))
+    ETC = CONFIG.parent
+    STATE = P(os.environ.get("CLAUDE_ROTATE_STATE", "/data/state.json"))
+    STATE_DIR = STATE.parent
+else:
+    ETC = P("/etc/claude-rotate")
+    CONFIG = ETC / "config.json"
+    STATE_DIR = P("/var/lib/claude-rotate")
+    STATE = STATE_DIR / "state.json"
 TOKENS = ETC / "tokens"
-STATE_DIR = P("/var/lib/claude-rotate")
-STATE = STATE_DIR / "state.json"
+# Token files are group-readable for the service account on a host; a container caller owns them alone.
+TOKEN_MODE = 0o600 if CONTAINER else 0o640
 OPT = P("/opt/claude-rotate")
 CURRENT = OPT / "current"
 RELEASES = OPT / "releases"
@@ -51,7 +65,7 @@ UNIT_NAME = "claude-rotate.service"
 # How long to wait for a reloading service to report that it accepted (or rejected) the config.
 RELOAD_WAIT_S = 5
 # One lock serializes install.sh, uninstall.sh and every admin command.
-LOCK = P("/run/claude-rotate.lock")
+LOCK = STATE_DIR / "admin.lock" if CONTAINER else P("/run/claude-rotate.lock")
 SERVICE_USER = "claude-rotate"
 SERVICE_GROUP = "claude-rotate"
 EXAMPLE = Path(__file__).resolve().parent.parent / "config.example.json"
@@ -77,14 +91,15 @@ def err(*parts):
 
 
 def require_root():
-    if os.geteuid() != 0 and not PREFIX:
+    if os.geteuid() != 0 and not PREFIX and not CONTAINER:
         raise Refused("claude-rotate-admin must run as root: sudo claude-rotate-admin ...")
 
 
 def service_ids():
     """(uid, gid) of the service identity. Under the test prefix a non-root caller uses its
-    own ids, so a service account on the host is never chowned to."""
-    if PREFIX and os.geteuid() != 0:
+    own ids, so a service account on the host is never chowned to. In container mode the
+    caller always is the service identity."""
+    if CONTAINER or (PREFIX and os.geteuid() != 0):
         return os.getuid(), os.getgid()
     try:
         return pwd.getpwnam(SERVICE_USER).pw_uid, grp.getgrnam(SERVICE_GROUP).gr_gid
@@ -93,6 +108,8 @@ def service_ids():
 
 
 def owner_uid():
+    if CONTAINER:
+        return os.getuid()
     return 0 if os.geteuid() == 0 else os.getuid()
 
 
@@ -103,7 +120,9 @@ def refuse_symlink(path: Path, what: str):
 
 def check_fixed_tree():
     """Every managed path and its ancestors inside the prefix must be real directories."""
-    for path in (ETC, TOKENS, STATE_DIR, OPT, RELEASES, UNIT.parent, LOCK.parent):
+    managed = (ETC, TOKENS, STATE_DIR, LOCK.parent) if CONTAINER else \
+        (ETC, TOKENS, STATE_DIR, OPT, RELEASES, UNIT.parent, LOCK.parent)
+    for path in managed:
         probe = path
         while True:
             if probe.is_symlink():
@@ -113,7 +132,8 @@ def check_fixed_tree():
             probe = probe.parent
     refuse_symlink(CONFIG, "config")
     refuse_symlink(STATE, "state file")
-    refuse_symlink(CURRENT.parent, "release root")
+    if not CONTAINER:
+        refuse_symlink(CURRENT.parent, "release root")
 
 
 class AdminLock:
@@ -131,7 +151,7 @@ class AdminLock:
         self.inherited = False
 
     def __enter__(self):
-        LOCK.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        LOCK.parent.mkdir(mode=0o700 if CONTAINER else 0o755, parents=True, exist_ok=True)
         refuse_symlink(LOCK, "lock file")
         inherited = os.environ.get("CLAUDE_ROTATE_LOCK_FD")
         if inherited:
@@ -532,7 +552,7 @@ def ensure_tree(cfg_required=False):
             out(f"warning: {entry} is a symbolic link; left unchanged")
         elif stat.S_ISREG(st.st_mode):
             os.chown(entry, uid, gid)
-            os.chmod(entry, 0o640)
+            os.chmod(entry, TOKEN_MODE)
 
 
 def cmd_init(args) -> int:
@@ -649,7 +669,7 @@ def store_token(args, token: str) -> int:
             if not inside_tokens_dir(path):
                 raise Refused(f"account '{args.name}' uses token_file {existing['token_file']!r}, "
                               f"which is not a regular file inside {TOKENS}; fix the config first")
-            write_private_file(path, token, 0o640, uid, gid)
+            write_private_file(path, token, TOKEN_MODE, uid, gid)
             if args.private_to is not None:
                 set_private(existing, args.private_to)
                 write_config(cfg)
@@ -659,8 +679,8 @@ def store_token(args, token: str) -> int:
             path = TOKENS / f"{args.name}.token"
             if path.exists() or path.is_symlink():
                 raise Refused(f"{path} already exists but no account uses it; remove it first")
-            write_private_file(path, token, 0o640, uid, gid)
-            acct = {"name": args.name, "token_file": f"tokens/{args.name}.token"}
+            write_private_file(path, token, TOKEN_MODE, uid, gid)
+            acct ={"name": args.name, "token_file": f"tokens/{args.name}.token"}
             if args.private_to is not None:
                 set_private(acct, args.private_to)
             try:
@@ -886,6 +906,8 @@ def choose_rotate_target(cfg: dict, state, requested):
 
 
 def cmd_rotate(args) -> int:
+    if CONTAINER:
+        raise Refused("stop the proxy first; rotate rewrites state.json")
     with AdminLock():
         check_fixed_tree()
         cfg = load_config()
