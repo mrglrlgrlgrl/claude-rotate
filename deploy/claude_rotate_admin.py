@@ -12,6 +12,7 @@ empty on a real host.
 
 import argparse
 import fcntl
+import errno
 import getpass
 import grp
 import json
@@ -22,6 +23,7 @@ import re
 import secrets
 import shlex
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -953,7 +955,7 @@ def cmd_rotate(args) -> int:
         if target is None:
             out(f"account '{current}' is already the active account; nothing changed")
             return EXIT_OK
-        if CONTAINER and live_status(cfg)[0] is not None:
+        if CONTAINER and not proxy_absent():
             # A running proxy rewrites state.json from memory: it must be stopped first.
             raise Refused("stop the proxy first: docker compose stop claude-rotate; nothing changed")
         managed = not CONTAINER and systemctl_available() and unit_installed()
@@ -1035,6 +1037,25 @@ def cmd_rotate(args) -> int:
 # ---------------------------------------------------------------- status
 
 
+NO_LISTENER_ERRNOS = {errno.ECONNREFUSED, errno.EHOSTUNREACH, errno.ENETUNREACH}
+
+
+def proxy_absent() -> bool:
+    """True only when nothing listens at the admin URL: connection refused, a failed name
+    lookup or an unreachable host. Any HTTP answer (even 401 or 5xx) or a timeout means a
+    proxy may be up, so the caller must treat it as running. The query carries no device key."""
+    request = urllib.request.Request(f"{ADMIN_URL}/rotate/status")
+    try:
+        with urllib.request.urlopen(request, timeout=5):  # noqa: S310 operator-set http(s) URL, GET only
+            return False
+    except urllib.error.HTTPError:
+        return False
+    except OSError as exc:  # URLError is an OSError; its cause is in .reason
+        cause = getattr(exc, "reason", exc)
+        return isinstance(cause, socket.gaierror) or (
+            isinstance(cause, OSError) and cause.errno in NO_LISTENER_ERRNOS)
+
+
 def live_status(cfg: dict):
     keys = [v for v in cfg["devices"].values() if isinstance(v, str) and v.strip() and PLACEHOLDER not in v]
     if not keys:
@@ -1046,7 +1067,7 @@ def live_status(cfg: dict):
         url = f"http://{host}:{port}/rotate/status"
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {keys[0]}"})
     try:
-        with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310 loopback only
+        with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310 loopback bind, or the operator-set admin URL in container mode
             return json.loads(response.read().decode("utf-8")), None
     except (urllib.error.URLError, OSError, ValueError) as exc:
         return None, f"{type(exc).__name__}: {getattr(exc, 'reason', exc)}"

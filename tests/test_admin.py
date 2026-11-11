@@ -1071,13 +1071,17 @@ class ProxyStub:
     """A stand-in proxy for container mode, on its own port. It reports a config reload as
     having just happened, with `error` as the rejection text, and records every request."""
 
-    def __init__(self, error=None):
+    def __init__(self, error=None, status=200):
         outer = self
-        self.error, self.requests = error, []
+        self.error, self.status, self.requests = error, status, []
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
                 outer.requests.append(("GET", self.path, self.headers.get("Authorization")))
+                if outer.status != 200:
+                    self.send_response(outer.status)
+                    self.end_headers()
+                    return
                 now = time.time()
                 body = json.dumps({"active_account": "acct-1", "accounts": {}, "config": {
                     "loaded_at": now, "last_reload": now, "error": outer.error, "restart_needed": []}}).encode()
@@ -1182,6 +1186,41 @@ def test_container_mode_rotate_needs_the_proxy_stopped(f):
     assert saved["active_account"] == "acct-2"
     event = saved["events"][-1]
     assert event["type"] == "switch" and event["reason"] == "manual" and event["to"] == "acct-2", event
+    assert f.calls() == [], f.calls()
+    (f.fake / "fail-all").unlink()
+
+
+def test_container_mode_rotate_refuses_when_the_proxy_answers_an_error_status(f):
+    (f.fake / "fail-all").write_text("")
+    for status in (401, 403, 500):
+        with ProxyStub(status=status) as proxy:
+            base, env = container_ready(f, f"container-rotate-{status}", proxy.url)
+            state = base / "data/state.json"
+            r = f.run("rotate", "acct-2", env=env)
+            assert r.returncode == 1 and "stop the proxy first: docker compose stop claude-rotate" in r.stderr, (status, r)
+            assert "nothing changed" in r.stderr and not state.exists(), (status, r)
+            assert proxy.requests and all(q[:2] == ("GET", "/rotate/status") for q in proxy.requests), proxy.requests
+    assert f.calls() == [], f.calls()
+    (f.fake / "fail-all").unlink()
+
+
+def test_container_mode_rotate_probes_without_a_device_key(f):
+    (f.fake / "fail-all").write_text("")
+    with ProxyStub(status=401) as proxy:
+        base, env = container_ready(f, "container-rotate-nokey", proxy.url)
+        config = base / "config/config.json"
+        cfg = json.loads(config.read_text())
+        cfg["devices"] = {}
+        config.write_text(json.dumps(cfg))
+        state = base / "data/state.json"
+        r = f.run("rotate", "acct-2", env=env)
+        assert r.returncode == 1 and "stop the proxy first: docker compose stop claude-rotate" in r.stderr, r
+        assert not state.exists()
+        # The probe is unauthenticated: it sends no credential.
+        assert proxy.requests and all(q == ("GET", "/rotate/status", None) for q in proxy.requests), proxy.requests
+    # With no proxy listening, the same key-less config still rotates.
+    r = f.run("rotate", "acct-2", env=dict(env, CLAUDE_ROTATE_ADMIN_URL=unused_url()))
+    assert r.returncode == 0 and json.loads(state.read_text())["active_account"] == "acct-2", r
     assert f.calls() == [], f.calls()
     (f.fake / "fail-all").unlink()
 
@@ -1860,6 +1899,8 @@ def main():
              "test_container_mode_confirms_a_reload_through_the_status_url",
              "test_container_mode_reports_a_refused_reload_and_a_silent_proxy",
              "test_container_mode_rotate_needs_the_proxy_stopped",
+             "test_container_mode_rotate_refuses_when_the_proxy_answers_an_error_status",
+             "test_container_mode_rotate_probes_without_a_device_key",
              "test_container_mode_status_skips_the_unit_and_queries_the_url",
              "test_service_identity_missing_is_refused_in_process",
              "test_symlinked_ancestor_of_a_managed_path_is_refused",
