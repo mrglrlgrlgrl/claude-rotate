@@ -128,6 +128,11 @@ const context = vm.createContext({URL,URLSearchParams,location:{search:'?key=fak
   html=await acct({weekly_cap:null,weekly_pacing:false,weekly_allowance:null,effective_util_7d:.2});
   for(const s of ['class="hatch"','class="cap"','class="pace"','tagged','role="img"','weekly cap','paced'])assert(!html.includes(s),'unexpected '+s+' without cap or pacing');
   noBadge(html,'no limits');
+  // card order: priority ascending, enabled before disabled, then config order
+  status.accounts={spare:{priority:2},bench:{priority:1,disabled:true},'main-b':{priority:1},default:{priority:100},'main-a':{priority:1}};
+  await vm.runInContext('refresh()',context,{timeout:1000});
+  const pos=['main-b','main-a','bench','spare','default'].map(n=>elements.accounts.innerHTML.indexOf(`<b>${n}</b>`));
+  assert(pos[0]>=0 && pos.every((p,i)=>i===0||p>pos[i-1]),'cards must read main-b, main-a, bench, spare, default: '+pos);
   // reload: a fresh context, the stub carried over, no ?key= in the URL
   let reload=await boot('',context.sessionStorage);
   assert(bearers(reload).length>=2 && bearers(reload).every(b=>b==='Bearer fake-viewer-key'),'reload must send the stored key');

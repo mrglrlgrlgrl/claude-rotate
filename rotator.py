@@ -1813,7 +1813,7 @@ async function refresh(){
     $('alerts').innerHTML='<div class="banner warn">&#9888; <span>No device key: open the panel link with ?key=&lt;device key&gt;</span></div>';
     return}
   const [st, stats] = await Promise.all([sr.json(), tr.json()]);
-  const per=stats.periods||{}, wk=st.weekly||{}, accts=Object.entries(st.accounts||{});
+  const per=stats.periods||{}, wk=st.weekly||{}, accts=Object.entries(st.accounts||{}).sort(([,x],[,y])=>x.priority-y.priority||(x.disabled?1:0)-(y.disabled?1:0));  // stable: config order within a tier
   $('host').textContent=location.host||'';
   $('pills').innerHTML=`<span class="pill"><span class="dot" style="background:var(--good)"></span>active: ${esc(st.active_account)}</span> <span class="pill">${esc(st.strategy)} &middot; ${accts.length} accounts &middot; ${Object.keys(stats.devices||{}).length} devices</span>`;
   $('alerts').innerHTML=(stats.alerts||[]).map(a=>`<div class="banner ${a.level==='warn'?'warn':''}">&#9888; <span><b>${a.level==='warn'?'Warning':'Note'}</b> ${esc(a.text)}</span></div>`).join('');
