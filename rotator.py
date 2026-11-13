@@ -1238,6 +1238,20 @@ def panel_allowed(request: Request) -> bool:
             or device_from_request(request) is not None)
 
 
+def client_session(request: Request, body) -> str | None:
+    """The client's own session id, for the audit record only: Claude Code sends it as
+    X-Claude-Code-Session-Id and, inside the JSON string metadata.user_id, as session_id.
+    None when the client sends neither. Cut to 128 characters."""
+    sid = request.headers.get("x-claude-code-session-id")
+    if not sid:
+        try:
+            user_id = body["metadata"]["user_id"]
+            sid = json.loads(user_id)["session_id"]
+        except (TypeError, KeyError, ValueError, RecursionError):
+            sid = None
+    return sid[:128] if isinstance(sid, str) and sid else None
+
+
 def device_from_request(request: Request) -> str | None:
     auth = request.headers.get("authorization", "")
     key = auth[7:] if auth.lower().startswith("bearer ") else request.headers.get("x-api-key", "")
@@ -1410,6 +1424,7 @@ def aggregate_audit() -> dict:
     by_device: dict = {}
     by_model: dict = {}
     by_account: dict = {}
+    model_devices: dict = {}
     device_hour_tokens: dict = {}
     device_hour_reqs: dict = {}
     device_meta: dict = {}
@@ -1435,6 +1450,8 @@ def aggregate_audit() -> dict:
         bump(by_device, rec.get("device", "?"), usage, cost)
         bump(by_model, model or "?", usage, cost)
         bump(by_account, rec.get("account", "?"), usage, cost)
+        per_dev = model_devices.setdefault(model or "?", {})
+        per_dev[dev] = per_dev.get(dev, 0) + 1
         if ts >= hour_ago:
             total = sum(usage.get(k, 0) for k in (
                 "input_tokens", "output_tokens", "cache_creation_input_tokens"))
@@ -1490,7 +1507,8 @@ def aggregate_audit() -> dict:
     return {"window": "last 24h (partial)" if limited else "last 24h",
             "history_limited": limited, "retained_records": len(records),
             "devices": devices, "by_device": by_device,
-            "by_model": by_model, "by_account": by_account, "alerts": alerts}
+            "by_model": by_model, "by_account": by_account, "model_devices": model_devices,
+            "alerts": alerts}
 
 
 USAGE_PATH = STATE_PATH.with_name("device_usage.json")
@@ -1831,11 +1849,12 @@ async function refresh(){
   const segs=cur=>Object.keys(PERIODS).map(p=>`<button data-p="${p}" class="${p===cur?'on':''}">${p}</button>`).join('');
   $('period').innerHTML=segs(period); $('acct-period').innerHTML=segs(acctPeriod);
   const byCost=o=>Object.entries(o||{}).sort((a,b)=>(b[1].cost_usd||0)-(a[1].cost_usd||0));
-  const rows=o=>byCost(o).map(([n,b])=>{const prompt=(b.input_tokens||0)+(b.cache_read||0)+(b.cache_write||0);
-    return `<tr><td>${esc(n)}</td><td>${fmt(b.requests)}</td><td>${fmt(tok(b))}</td><td>${prompt?Math.round((b.cache_read||0)/prompt*100):0}%</td><td>${money(b.cost_usd)}</td></tr>`}).join('');
+  const from=md=>{const d=Object.entries(md||{}).sort((a,b)=>b[1]-a[1]); return d.length?`<span class="sub">from ${d.map(([n,c])=>esc(n)+' '+esc(c)).join(' &middot; ')}</span>`:''};
+  const rows=(o,devs)=>byCost(o).map(([n,b])=>{const prompt=(b.input_tokens||0)+(b.cache_read||0)+(b.cache_write||0);
+    return `<tr><td>${esc(n)}${devs?from(devs[n]):''}</td><td>${fmt(b.requests)}</td><td>${fmt(tok(b))}</td><td>${prompt?Math.round((b.cache_read||0)/prompt*100):0}%</td><td>${money(b.cost_usd)}</td></tr>`}).join('');
   const head='<tr><th>{}</th><th>Requests</th><th>Tokens</th><th>From cache</th><th>$ equiv</th></tr>';
   const models=PERIODS[period]==='24h'?stats.by_model:(per[PERIODS[period]]||{}).model;
-  $('models').innerHTML=head.replace('{}','Model')+rows(models);
+  $('models').innerHTML=head.replace('{}','Model')+rows(models,PERIODS[period]==='24h'?stats.model_devices||{}:null);
   $('model-pie').innerHTML=pie(byCost(models));
   const accounts=PERIODS[acctPeriod]==='24h'?stats.by_account:(per[PERIODS[acctPeriod]]||{}).account;
   $('by-account').innerHTML=head.replace('{}','Account')+rows(accounts);
@@ -2040,7 +2059,8 @@ async def openai_chat(request: Request):
         "POST", "/v1/messages", fwd, json.dumps(abody).encode(), request, device)
 
     rec = {"device": device, "account": account, "path": "/v1/chat/completions", "method": "POST",
-           "model": abody.get("model"), "status": upstream.status_code}
+           "model": abody.get("model"), "status": upstream.status_code,
+           "session": client_session(request, oai)}
     if retries:
         rec["retries"] = retries
     resp_headers = {"x-rotate-account": account}
@@ -2129,9 +2149,11 @@ async def proxy(request: Request, path: str):
     fwd_headers.pop("x-api-key", None)
 
     model = None
+    parsed = None
     if body and request.method == "POST":
         try:
-            model = json.loads(body).get("model")
+            parsed = json.loads(body)
+            model = parsed.get("model")
             if not isinstance(model, str):
                 model = None
         except (ValueError, RecursionError, AttributeError):
@@ -2149,7 +2171,8 @@ async def proxy(request: Request, path: str):
         request.method, url, fwd_headers, body, request, device)
 
     rec = {"device": device, "account": account, "path": "/" + path, "method": request.method,
-           "model": model, "status": upstream.status_code}
+           "model": model, "status": upstream.status_code,
+           "session": client_session(request, parsed)}
     if retries:
         rec["retries"] = retries
     resp_headers = {k: v for k, v in upstream.headers.items()

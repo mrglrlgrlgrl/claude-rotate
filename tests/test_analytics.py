@@ -520,6 +520,17 @@ def jline(r):
     return json.dumps(r) + "\n"
 
 
+fresh_cache(tmp / "model_devices.jsonl")
+R.AUDIT_PATH.write_text("".join(jline(r) for r in [
+    rec(now - 60, "laptop", "claude-sonnet-5", "a"), rec(now - 50, "laptop", "claude-sonnet-5", "a"),
+    rec(now - 40, "ci-box", "claude-sonnet-5", "a"), rec(now - 30, "ci-box", "claude-haiku-4-5", "a"),
+    {**rec(now - 20, "laptop", "x", "a"), "model": ["not", "a", "string"]},
+    rec(now - 90000, "gone-box", "claude-sonnet-5", "a")]))
+md = R.aggregate_audit()["model_devices"]
+check("model_devices counts requests per model per device, within 24 h",
+      md["claude-sonnet-5"] == {"laptop": 2, "ci-box": 1} and md["claude-haiku-4-5"] == {"ci-box": 1})
+check("a non-string model folds into '?' in model_devices", md["?"] == {"laptop": 1})
+
 fresh_cache(tmp / "ageing.jsonl")
 t_old, t_new = now - 3600, now + 25 * 3600 - 600
 old_lines = jline(rec(t_old, "laptop", "claude-haiku-4-5", "a", inp=5)) \

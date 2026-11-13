@@ -26,7 +26,7 @@ const script = JSON.parse(process.argv[1]), panel = JSON.parse(process.argv[2]);
 const value = '<mark data-audit="marker">&\'"</mark>';
 const elements = {}, urls = [], replaced = [];
 const usage = {requests:1,input_tokens:1,output_tokens:1,cache_read:0,cache_write:0,cost_usd:1};
-const stats = {devices:{[value]:{last_model:value,last_account:value,key_suffix:value}},alerts:[{level:'warn',text:value}],by_device:{[value]:usage},by_model:{[value]:usage},by_account:{[value]:usage},periods:{since:value,account_since:value,'7d':{device:{[value]:usage},model:{[value]:usage},account:{[value]:usage}},'30d':{device:{[value]:usage},model:{[value]:usage},account:{[value]:usage}},all:{device:{[value]:usage,[value+'-gone']:usage},model:{[value]:usage},account:{[value]:usage}},trend:{[value]:[0,1,2]}}};
+const stats = {devices:{[value]:{last_model:value,last_account:value,key_suffix:value}},alerts:[{level:'warn',text:value}],by_device:{[value]:usage},by_model:{[value]:usage},by_account:{[value]:usage},model_devices:{[value]:{[value]:3,[value+'-2']:1},only:{[value]:3,[value+'-2']:1}},periods:{since:value,account_since:value,'7d':{device:{[value]:usage},model:{[value]:usage},account:{[value]:usage}},'30d':{device:{[value]:usage},model:{[value]:usage},account:{[value]:usage}},all:{device:{[value]:usage,[value+'-gone']:usage},model:{[value]:usage},account:{[value]:usage}},trend:{[value]:[0,1,2]}}};
 const status = {version:{version:value,revision:'0123456789abcdef0123456789abcdef01234567'},accounts:{[value]:{priority:100,private_to:[value,value+"-2"],reset_5h:1793883600,reset_7d:1793883600,reset_5h_in_min:30,reset_7d_in_h:50}},active_account:value,strategy:value,switch_threshold:.8,switch_threshold_7d:.98,recent_events:[{ts:value,from:value,to:value,reason:value}],weekly:{series:[[0,0,100],[3600,10,100]],projection:[[3600,10,100],[7200,100,100]],rate_per_day:5,eta:7200,back:9000,back_account:value,capacity:200,demand:{rate_per_day:58.5,measured_h:61.2,window_h:72,week_pct:410.4,capacity_pct:400,accounts_needed:value,shortfall_pct:10.4,note:null}}};
 const makeStorage=(init)=>{const m=new Map(Object.entries(init||{}));return {m,getItem:k=>m.has(k)?m.get(k):null,setItem:(k,v)=>{m.set(k,String(v))},removeItem:k=>{m.delete(k)}}};
 const makeContext=(search,storage,code)=>{
@@ -54,6 +54,8 @@ const context = vm.createContext({URL,URLSearchParams,location:{search:'?key=fak
     assert(!elements[id].innerHTML.includes('<mark'),id+' contains raw markup');
     assert(elements[id].innerHTML.includes('&lt;mark'),id+' lost escaped text');
   }
+  assert(!elements.models.innerHTML.includes('from '),'7 d must list no devices per model');
+  assert(!/\.session\b|session_id|"session"/.test(script),'the panel must not read a session id');
   assert(elements.ver.innerHTML.includes('claude-rotate &lt;mark') && elements.ver.innerHTML.endsWith('&middot; 0123456'),'footer must show the escaped version and 7 revision characters');
   assert(!elements.ver.innerHTML.includes('0123456789'),'revision not cut to 7 characters');
   assert(elements.accounts.innerHTML.includes('private to &lt;mark') && elements.accounts.innerHTML.includes('&lt;/mark&gt;-2'),'private badge missing or unescaped');
@@ -68,6 +70,7 @@ const context = vm.createContext({URL,URLSearchParams,location:{search:'?key=fak
   assert(elements['model-pie'].innerHTML.includes('<span>other</span>') && elements['model-pie'].innerHTML.includes('<span>m5</span>') && !elements['model-pie'].innerHTML.includes('<span>m6</span>'),'other legend entry wrong');
   elements.period.onclick({target:{dataset:{p:'24 h'}}}); await vm.runInContext('refresh()',context,{timeout:1000});
   assert.equal(slices('model-pie'),1,'the 24 h period must redraw the model pie');
+  assert(elements.models.innerHTML.includes('<span class="sub">from &lt;mark data-audit=&quot;marker&quot;&gt;&amp;&#39;&quot;&lt;/mark&gt; 3 &middot; &lt;mark')&&elements.models.innerHTML.includes('-2 1</span>'),'24 h model row must list escaped devices by count');
   elements.period.onclick({target:{dataset:{p:'7 d'}}}); await vm.runInContext('refresh()',context,{timeout:1000});
   assert.equal(slices('model-pie'),7,'the 7 d period must redraw the model pie');
   assert(!elements['acct-since'].innerHTML,'24 h must show no since note');

@@ -621,6 +621,28 @@ check("chat json: the forwarded rate-limit headers are echoed",
       and r.headers["anthropic-ratelimit-unified-status"] == "allowed"
       and "anthropic-ratelimit-unified-5h-reset" in r.headers)
 
+# (4b) the client's session id is audited, never returned
+SID = "0b9c1a1e-6f0e-4f43-9d6a-1c1f4a7a0001"
+fresh_state()
+use_upstream(lambda req: httpx.Response(200, json=MSG, headers=unified()))
+call("/v1/chat/completions", body=OAI_BODY, headers={"X-Claude-Code-Session-Id": SID})
+call("/v1/chat/completions", body=OAI_BODY)
+call("/v1/chat/completions", body=OAI_BODY, headers={"x-claude-code-session-id": "s" * 300})
+call(body={"model": "claude-opus-5", "messages": []}, headers={"x-claude-code-session-id": SID})
+call(body={"model": "claude-opus-5", "messages": []})
+call(body={"model": "claude-opus-5", "messages": [],
+           "metadata": {"user_id": json.dumps({"device_id": "d", "session_id": SID + "-body"})}})
+call(body={"model": "claude-opus-5", "messages": [], "metadata": {"user_id": "user_x_session_y"}})
+call(body={"model": "claude-opus-5", "messages": []}, headers={"x-claude-code-session-id": "p" * 300})
+sessions = [r_["session"] for r_ in audit_recs()]
+check("both routes log the session id, null when the client sends none, cut to 128",
+      sessions == [SID, None, "s" * 128, SID, None, SID + "-body", None, "p" * 128])
+status_text = call(path="/rotate/status", method="GET").text
+stats_text = call(path="/rotate/stats", method="GET").text
+check("no /rotate response carries a session key or id",
+      '"session"' not in status_text and '"session"' not in stats_text
+      and SID not in status_text + stats_text)
+
 # (5) non-200 reply becomes an api_error with the upstream status
 fresh_state()
 use_upstream(lambda req: httpx.Response(
