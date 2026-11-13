@@ -352,7 +352,8 @@ rate-limit headers:
   to also receive each alert as a JSON POST.
 - **Accounts**: live 5-hour and weekly meters (from Anthropic's own headers)
   with a tick at the switch threshold, reset countdowns, upstream status and
-  the active account. Hover a reset countdown for the exact reset time in your
+  the active account, in priority order, enabled before disabled within a
+  priority, then config order. Hover a reset countdown for the exact reset time in your
   browser's time zone and in UTC. A private account carries a "private to
   <device>" badge. An account with `weekly_cap` or `weekly_pacing` shows its
   limit on the weekly meter: a red line at `weekly_cap` with the part after it
@@ -1012,6 +1013,7 @@ those taken from other forks.
 - Gave the panel's By account card its own 24 h / 7 d / 30 d / all time selector, backed by an `account` kind in `device_usage.json` that starts at the upgrade, and centred the pies and an odd last account card ([02f7109](https://github.com/mrglrlgrlgrl/claude-rotate/commit/02f7109)).
 - Showed the running version and commit in the panel footer, from build arguments the image workflow passes (`edge` on `main`, `X.Y.Z` on a release tag, `dev` outside Docker), and added `version` to `/rotate/status` ([0bf41de](https://github.com/mrglrlgrlgrl/claude-rotate/commit/0bf41de)).
 - Logged the client's session id as `session` in the audit record (never shown or returned), added `model_devices` to `/rotate/stats`, and listed the devices that sent each model on the panel's 24 h By model rows ([803eeba](https://github.com/mrglrlgrlgrl/claude-rotate/commit/803eeba)).
+- Ordered the panel's account cards by priority, enabled before disabled within a priority, then config order ([5418d3f](https://github.com/mrglrlgrlgrl/claude-rotate/commit/5418d3f)).
 - clement-z: Chart weekly quota across accounts and estimate when it runs out; `accounts[].weight` for mixed plan sizes ([206e956](https://github.com/clement-z/claude-rotate/commit/206e956), [9cc2167](https://github.com/clement-z/claude-rotate/commit/9cc2167)).
 - clement-z: Project 7 days ahead through shortfalls, shade periods at the limit, and measure the rate only over time with quota left ([c625633](https://github.com/clement-z/claude-rotate/commit/c625633), [5047e8d](https://github.com/clement-z/claude-rotate/commit/5047e8d), [0d8493e](https://github.com/clement-z/claude-rotate/commit/0d8493e)).
 - clement-z: Plot summed weekly usage against capacity, dropping at each reset; scrollable history around now ([a02cebb](https://github.com/clement-z/claude-rotate/commit/a02cebb), [56ef19e](https://github.com/clement-z/claude-rotate/commit/56ef19e)).
