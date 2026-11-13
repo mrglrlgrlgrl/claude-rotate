@@ -1735,7 +1735,7 @@ function pie(rows){
 }
 function meter(label,u,thr,reset,ts,a){
   const lim=a&&a.weekly_allowance!=null, paced=lim&&a.weekly_pacing, al=lim?a.weekly_allowance:0, cap=lim&&a.weekly_cap!=null?a.weekly_cap:1;
-  const hit=lim&&u>=al, pc=x=>+(x*100).toFixed(2), rd=x=>Math.round(x*100), pacedTxt='paced allowance '+rd(al)+'% now of '+rd(cap)+'%';
+  const hit=lim&&u>=al, pc=x=>+(x*100).toFixed(2), rd=x=>Math.round(x*100), pacedTxt='paced allowance '+rd(al)+'% of '+rd(cap)+'% limit';
   const sev=u>=1?['var(--crit)',' &#10005; limit reached']:hit?['var(--warn)',paced?' &#9888; paced allowance reached':' &#9888; weekly cap reached']:u>=thr?['var(--warn)',' &#9888; past switch point']:['var(--s1)',''];
   const hatch=lim&&cap<1?`<span class="hatch" style="left:${pc(cap)}%"></span>`:'';
   const capLine=lim&&cap<1?`<span class="cap" style="left:${pc(cap)}%" title="weekly cap ${rd(cap)}%: the hatched part is not available"></span>`:'';

@@ -103,11 +103,14 @@ const context = vm.createContext({URL,URLSearchParams,location:{search:'?key=fak
   assert(!html.includes('class="pace') && !html.includes('tagged') && !html.includes('reached') && !html.includes('paced'),'flat cap shows pacing or reached');
   noBadge(html,'flat');
   html=await acct({weekly_cap:.5,weekly_pacing:true,weekly_allowance:.1071,effective_util_7d:.05});
-  assert(html.includes('<span class="pace" style="left:10.71%" title="paced allowance 11% now of 50%"><b>11%</b></span>') && html.includes('class="meter tagged"') && html.includes(capLine(50)) && !html.includes('reached'),'paced cap marks wrong');
+  assert(html.includes('<span class="pace" style="left:10.71%" title="paced allowance 11% of 50% limit"><b>11%</b></span>') && html.includes('class="meter tagged"') && html.includes(capLine(50)) && !html.includes('reached'),'paced cap marks wrong');
+  assert(html.includes('aria-label="7d usage 5%, paced allowance 11% of 50% limit"'),'paced aria-label wrong');
+  assert(!html.includes('now of'),'old paced wording still drawn (cap)');
   assert(html.includes('<span class="hatch" style="left:50%"></span><i style='),'hatch must precede the fill (paced)');
   noBadge(html,'paced');
   html=await acct({weekly_cap:null,weekly_pacing:true,weekly_allowance:.1071,effective_util_7d:.05});
-  assert(html.includes('title="paced allowance 11% now of 100%"><b>11%</b></span>') && !html.includes('class="cap"') && !html.includes('class="hatch"'),'paced without a cap wrong');
+  assert(html.includes('title="paced allowance 11% of 100% limit"><b>11%</b></span>') && !html.includes('class="cap"') && !html.includes('class="hatch"'),'paced without a cap wrong');
+  assert(!html.includes('now of'),'old paced wording still drawn (no cap)');
   noBadge(html,'paced no cap');
   for(const [al,cls] of [[.03,'pace lo'],[.97,'pace hi'],[.5,'pace']]){
     html=await acct({weekly_cap:null,weekly_pacing:true,weekly_allowance:al,effective_util_7d:0});
