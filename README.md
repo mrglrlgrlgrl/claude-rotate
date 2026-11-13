@@ -400,6 +400,11 @@ rate-limit headers:
   two-column row. Without usage the pie gives way to "no usage".
 - **Recent switches**: the latest account switches and their reasons, in
   their own full-width card below the two tables.
+- **Footer**: the running version and commit, such as `claude-rotate edge ·
+  0123abc`. The Docker image takes them from its build: `edge` for an image
+  built from `main`, `X.Y.Z` for one built from a release tag, and the first 7
+  characters of the commit. Outside Docker (`install.sh`, systemd, launchd)
+  the files are copied without git history, so it shows `dev` and no commit.
 
 The 24 h figures come from the audit log. Longer periods come from
 `device_usage.json` next to `state.json`: daily totals per device, model and account for
@@ -407,7 +412,7 @@ The 24 h figures come from the audit log. Longer periods come from
 minute. On first start it is rebuilt once from `audit.jsonl` and its rotated
 copies, so all time reaches back as far as those logs do.
 
-JSON endpoints: `/rotate/status` (accounts, each with its `private_to` owners as a list or null, its `weekly_cap`, `weekly_pacing` and `weekly_allowance` (the weekly use allowed now, or null with neither setting), + switch events, + `weekly.demand`, the weekly demand figures) and
+JSON endpoints: `/rotate/status` (accounts, each with its `private_to` owners as a list or null, its `weekly_cap`, `weekly_pacing` and `weekly_allowance` (the weekly use allowed now, or null with neither setting), + switch events, + `weekly.demand`, the weekly demand figures, + `version`, the running `version` and `revision`) and
 `/rotate/stats` (rollups, alerts and the longer `periods`), same `?key=` or `Authorization: Bearer`
 auth. Audit trail: `logs/audit.jsonl`, one JSON record per request.
 

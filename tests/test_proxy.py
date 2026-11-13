@@ -9,6 +9,8 @@ import contextlib
 import gzip
 import io
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -291,6 +293,29 @@ check("status needs auth", call(path="/rotate/status", key="nope", method="GET")
 r = call(path="/rotate/status", method="GET")
 check("status shape", r.status_code == 200 and r.json()["strategy"] == "consume-first"
       and "accounts" in r.json() and "series" in r.json()["weekly"])
+_ver = R.VERSION, R.REVISION
+R.VERSION, R.REVISION = "9.9.9", "abcdef0123456789"
+try:
+    check("status returns the version and revision",
+          call(path="/rotate/status", method="GET").json()["version"]
+          == {"version": "9.9.9", "revision": "abcdef0123456789"})
+finally:
+    R.VERSION, R.REVISION = _ver
+
+
+def import_version(**env):
+    keep = {k: v for k, v in os.environ.items()
+            if k not in ("CLAUDE_ROTATE_VERSION", "CLAUDE_ROTATE_REVISION")}
+    out = subprocess.run([sys.executable, "-c", "import rotator as R; print(R.VERSION, R.REVISION)"],
+                         cwd=Path(R.__file__).parent, capture_output=True, text=True, check=True,
+                         env=keep | env).stdout.rstrip("\n").split(" ", 1)
+    return out[0], out[1]
+
+
+check("with the env unset, the version is dev and the revision empty", import_version() == ("dev", ""))
+check("an empty version falls back to dev", import_version(CLAUDE_ROTATE_VERSION="") == ("dev", ""))
+check("the build env sets version and revision",
+      import_version(CLAUDE_ROTATE_VERSION="edge", CLAUDE_ROTATE_REVISION="a" * 40) == ("edge", "a" * 40))
 fresh_state(accounts={"a": {"reset_5h": 1793883600, "reset_7d": 1793883600}})
 acct =call(path="/rotate/status", method="GET").json()["accounts"]["a"]
 check("status returns raw reset epochs", acct["reset_5h"] == 1793883600 and acct["reset_7d"] == 1793883600)

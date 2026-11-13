@@ -52,6 +52,10 @@ CONFIG_PATH = Path(os.environ.get("CLAUDE_ROTATE_CONFIG", ROOT / "config.json"))
 STATE_PATH = Path(os.environ.get("CLAUDE_ROTATE_STATE", ROOT / "state.json"))
 AUDIT_PATH = Path(os.environ.get("CLAUDE_ROTATE_AUDIT", ROOT / "logs" / "audit.jsonl"))
 
+# The image build sets these; elsewhere the version is "dev" with no revision.
+VERSION = os.environ.get("CLAUDE_ROTATE_VERSION") or "dev"
+REVISION = os.environ.get("CLAUDE_ROTATE_REVISION", "")
+
 UPSTREAM = "https://api.anthropic.com"
 HOP = {
     "host", "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
@@ -1223,6 +1227,7 @@ async def rotate_status(request: Request):
         "storage_errors": STORAGE_ERRORS,
         "config": CONFIG_STATUS,
         "weekly": {**weekly_outlook(now), "demand": weekly_demand(now)},
+        "version": {"version": VERSION, "revision": REVISION},
     }
 
 
@@ -1674,7 +1679,7 @@ PANEL_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta
  <div class="card"><h2>By account <span id="acct-since" class="muted"></span><span class="seg" id="acct-period"></span></h2><table id="by-account"></table><div id="account-pie"></div></div>
 </section>
 <section class="card"><h2>Recent switches</h2><div class="timeline" id="events"></div></section>
-<p class="muted small">Cost-equivalent = API list prices (cache read 0.1&times;, write 1.25&times;); actual spend is covered by the subscriptions.</p>
+<p class="muted small">Cost-equivalent = API list prices (cache read 0.1&times;, write 1.25&times;); actual spend is covered by the subscriptions. <span id="ver"></span></p>
 </main>
 <script>
 const SKEY = 'claude-rotate-key';
@@ -1837,6 +1842,7 @@ async function refresh(){
   $('account-pie').innerHTML=pie(byCost(accounts));
   $('acct-since').innerHTML=PERIODS[acctPeriod]!=='24h'&&per.account_since?`since ${esc(per.account_since)}`:'';
   $('events').innerHTML=(st.recent_events||[]).slice().reverse().map(e=>`<div><span class="muted">${esc(String(e.ts||'').slice(5,16).replace('T',' '))}</span><span>${esc(e.from)} &rarr; ${esc(e.to)}</span><span class="badge" style="margin-left:auto">${esc(e.reason)}</span></div>`).join('')||'<span class="muted">none</span>';
+  const ver=st.version||{}; $('ver').innerHTML=`claude-rotate ${esc(ver.version||'dev')}`+(ver.revision?` &middot; ${esc(String(ver.revision).slice(0,7))}`:'');
   $('upd').textContent='updated '+new Date().toLocaleTimeString();
 }
 refresh(); setInterval(refresh, 10000);

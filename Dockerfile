@@ -16,6 +16,13 @@ WORKDIR /app
 COPY requirements.lock .
 RUN pip install --no-cache-dir --root-user-action=ignore -r requirements.lock
 
+# After the dependency layer, so a new commit does not bust its cache. The
+# image workflow sets both; the panel footer shows them.
+ARG CLAUDE_ROTATE_VERSION=dev
+ARG CLAUDE_ROTATE_REVISION=
+ENV CLAUDE_ROTATE_VERSION=$CLAUDE_ROTATE_VERSION \
+    CLAUDE_ROTATE_REVISION=$CLAUDE_ROTATE_REVISION
+
 # --chmod: a checkout made under a strict umask must still be readable by the
 # unprivileged user below.
 COPY --chmod=0644 rotator.py oai_compat.py LICENSE config.example.json ./
