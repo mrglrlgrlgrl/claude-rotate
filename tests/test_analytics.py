@@ -436,13 +436,14 @@ def iso(n):
 
 
 def empty_rollup():
-    return {"days": {}, "total": {"device": {}, "model": {}}, "since": None}
+    return {"days": {}, "total": {"device": {}, "model": {}, "account": {}}, "since": None,
+            "account_since": None}
 
 
 use = {"input_tokens": 1_000_000, "output_tokens": 10}
 R.ROLLUP = empty_rollup()
-R.roll_up({"device": "laptop", "model": "claude-opus-5", "usage": use}, iso(0))
-R.roll_up({"device": "laptop", "model": "claude-opus-5", "usage": use}, iso(0))
+R.roll_up({"device": "laptop", "model": "claude-opus-5", "account": "a", "usage": use}, iso(0))
+R.roll_up({"device": "laptop", "model": "claude-opus-5", "account": "a", "usage": use}, iso(0))
 R.roll_up({"device": "old-box", "model": {"bad": 1}, "usage": use}, iso(8))
 per = R.usage_periods()
 check("7 d covers today and the 6 days before",
@@ -453,6 +454,32 @@ check("non-string models fold into '?'", "?" in per["all"]["model"])
 check("trend is 30 daily costs ending today", len(per["trend"]["laptop"]) == 30
       and per["trend"]["laptop"][-1] == 10.0 and per["trend"]["old-box"][-9] == 5.0)
 check("since is the oldest day seen", per["since"] == iso(8))
+check("account totals land in 7 d, 30 d and all time",
+      per["7d"]["account"]["a"]["requests"] == 2 and per["30d"]["account"]["a"]["requests"] == 2
+      and per["all"]["account"]["a"]["requests"] == 2)
+check("a record with no account folds into '?', outside 7 d when old",
+      per["all"]["account"]["?"]["requests"] == 1 and per["30d"]["account"]["?"]["requests"] == 1
+      and "?" not in per["7d"]["account"])
+check("account_since is the oldest day an account was rolled up", per["account_since"] == iso(8))
+
+# A file written before the account kind: totals and days lack it.
+old_b = {"requests": 4, "input_tokens": 0, "output_tokens": 0, "cache_read": 0,
+         "cache_write": 0, "cost_usd": 1.0}
+R.ROLLUP = {"days": {iso(2): {"device": {"laptop": dict(old_b)}, "model": {"m": dict(old_b)}}},
+            "total": {"device": {"laptop": dict(old_b)}, "model": {"m": dict(old_b)}},
+            "since": iso(2)}
+old_per = R.usage_periods()
+check("an old-shape file reads with empty account totals",
+      old_per["all"]["account"] == {} and old_per["7d"]["account"] == {}
+      and old_per["account_since"] is None)
+R.audit({"device": "laptop", "model": "claude-opus-5", "account": "a", "usage": use})
+new_per = R.usage_periods()
+check("an old-shape file takes a new audit record and starts account history today",
+      new_per["account_since"] == iso(0) and new_per["all"]["account"]["a"]["requests"] == 1
+      and new_per["7d"]["account"]["a"]["requests"] == 1)
+check("its device and model totals only gain the new record",
+      new_per["all"]["device"]["laptop"]["requests"] == 5 and new_per["all"]["model"]["m"]["requests"] == 4
+      and new_per["all"]["model"]["claude-opus-5"]["requests"] == 1 and new_per["since"] == iso(2))
 
 R.AUDIT_PATH, R.USAGE_PATH = tmp / "backfill.jsonl", tmp / "device_usage.json"
 

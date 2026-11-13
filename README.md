@@ -387,19 +387,22 @@ rate-limit headers:
   and every removed device that still has history, with usage over 24 h, 7 d,
   30 d and all time plus a 30-day cost trend. 7 d and 30 d are calendar days,
   today included.
-- **By model** (24 h / 7 d / 30 d / all time) and **by account** (24 h),
-  requests, tokens, the share of prompt tokens served from cache, and a
+- **By model** and **by account**, each with its own 24 h / 7 d / 30 d / all
+  time selector (by account starts at 24 h; account history beyond 24 h
+  starts when the account totals were first recorded, shown as "since" in its
+  heading), requests, tokens, the share of prompt tokens served from cache, and a
   *cost-equivalent* column: what the usage would cost at API list prices (incl.
   cache read 0.1× / write 1.25×), i.e. what the subscriptions are saving you.
   Under each table a pie chart shows each row's share of that
   cost-equivalent, in table order: the top six rows get a slice each and the
-  rest are summed as "other". The by-model pie follows the period selector.
-  Without usage the pie gives way to "no usage".
+  rest are summed as "other". Each pie follows its card's period selector and
+  sits centred in its card, as does a last account card left alone in a
+  two-column row. Without usage the pie gives way to "no usage".
 - **Recent switches**: the latest account switches and their reasons, in
   their own full-width card below the two tables.
 
 The 24 h figures come from the audit log. Longer periods come from
-`device_usage.json` next to `state.json`: daily totals per device and model for
+`device_usage.json` next to `state.json`: daily totals per device, model and account for
 31 days plus all-time totals, updated with every request and saved every
 minute. On first start it is rebuilt once from `audit.jsonl` and its rotated
 copies, so all time reaches back as far as those logs do.

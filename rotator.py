@@ -1490,23 +1490,27 @@ def aggregate_audit() -> dict:
 
 USAGE_PATH = STATE_PATH.with_name("device_usage.json")
 ROLLUP_DAYS = 31
-ROLLUP: dict = {"days": {}, "total": {"device": {}, "model": {}}, "since": None}
+ROLLUP: dict = {"days": {}, "total": {"device": {}, "model": {}, "account": {}}, "since": None,
+                "account_since": None}
 ROLLUP_DIRTY = False
 
 
 def roll_up(rec: dict, day: str) -> None:
-    """Add one audit record to the per-day and all-time totals by device and model.
+    """Add one audit record to the per-day and all-time totals by device, model and account.
     The audit log rotates and the stats cache holds 24 h; this keeps the longer view."""
     global ROLLUP_DIRTY
     model = rec.get("model")
     model = model if isinstance(model, str) else None
     usage = rec.get("usage") or {}
     cost = api_cost(model, usage)
-    buckets = ROLLUP["days"].setdefault(day, {"device": {}, "model": {}})
-    for kind, key in (("device", str(rec.get("device", "?"))), ("model", model or "?")):
-        bump(buckets[kind], key, usage, cost)
-        bump(ROLLUP["total"][kind], key, usage, cost)
+    buckets = ROLLUP["days"].setdefault(day, {"device": {}, "model": {}, "account": {}})
+    for kind, key in (("device", str(rec.get("device", "?"))), ("model", model or "?"),
+                      ("account", str(rec.get("account", "?")))):
+        # A file written before the account kind lacks it in the totals and in old days.
+        bump(buckets.setdefault(kind, {}), key, usage, cost)
+        bump(ROLLUP["total"].setdefault(kind, {}), key, usage, cost)
     ROLLUP["since"] = min(ROLLUP["since"] or day, day)
+    ROLLUP["account_since"] = min(ROLLUP.get("account_since") or day, day)
     ROLLUP_DIRTY = True
 
 
@@ -1566,7 +1570,7 @@ def usage_periods() -> dict:
     days = [(today - dt.timedelta(days=i)).isoformat() for i in range(29, -1, -1)]
 
     def total(span):
-        out = {"device": {}, "model": {}}
+        out = {"device": {}, "model": {}, "account": {}}
         for day in span:
             for kind, buckets in ROLLUP["days"].get(day, {}).items():
                 for key, b in buckets.items():
@@ -1577,8 +1581,9 @@ def usage_periods() -> dict:
 
     trend = {dev: [round(ROLLUP["days"].get(d, {}).get("device", {}).get(dev, {}).get("cost_usd", 0), 2)
                    for d in days] for dev in ROLLUP["total"]["device"]}
-    return {"since": ROLLUP["since"], "7d": total(days[-7:]), "30d": total(days),
-            "all": ROLLUP["total"], "trend": trend}
+    return {"since": ROLLUP["since"], "account_since": ROLLUP.get("account_since"), "7d": total(days[-7:]), "30d": total(days),
+            "all": ROLLUP["total"] | {"account": ROLLUP["total"].get("account", {})},
+            "trend": trend}
 
 
 @app.get("/rotate/stats")
@@ -1633,11 +1638,12 @@ PANEL_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta
  .seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-left:auto}
  .seg button{background:none;border:0;color:var(--ink2);padding:4px 12px;font:inherit;font-size:12px;cursor:pointer} .seg button.on{background:var(--grid);color:var(--ink);font-weight:600}
  .split{display:grid;grid-template-columns:1.3fr 1fr;gap:16px}
- .pie{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-top:16px} .pie svg{display:block;flex:none}
+ .pie{display:flex;align-items:center;justify-content:center;gap:18px;flex-wrap:wrap;margin-top:16px} .pie svg{display:block;flex:none}
  .pie ul{list-style:none;margin:0;padding:0;display:grid;gap:4px;color:var(--ink2);font-size:12px} .pie li{display:flex;align-items:center;gap:8px}
  .pie li i{width:10px;height:10px;border-radius:2px;flex:none} .pie li b{margin-left:auto;padding-left:12px;font-weight:500;font-variant-numeric:tabular-nums}
  .timeline div{display:flex;gap:12px;padding:6px 0;border-bottom:1px solid var(--grid);color:var(--ink2)} .timeline div:last-child{border-bottom:0}
  .linkbtn{background:none;border:1px solid var(--border);border-radius:6px;color:var(--ink2);font:inherit;font-size:12px;padding:2px 8px;cursor:pointer}
+ @media (min-width:824px){.accounts>.card:last-child:nth-child(odd){grid-column:1/-1;justify-self:center;width:calc(50% - 8px)}}
  @media (max-width:900px){.kpis{grid-template-columns:1fr 1fr}.hero{grid-column:1/-1}.split{grid-template-columns:1fr}
   .meter-row{grid-template-columns:28px 1fr;row-gap:4px}.meter-row>span:last-child{grid-column:2}.meter-row:has(.tagged)>span:last-child{margin-top:0}
   #devices,#devices tbody{display:block} #devices tr:first-child{display:none}
@@ -1665,7 +1671,7 @@ PANEL_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta
 <section class="card"><h2>Devices</h2><table id="devices"></table></section>
 <section class="split">
  <div class="card"><h2>By model <span class="seg" id="period"></span></h2><table id="models"></table><div id="model-pie"></div></div>
- <div class="card"><h2>By account, 24 h</h2><table id="by-account"></table><div id="account-pie"></div></div>
+ <div class="card"><h2>By account <span id="acct-since" class="muted"></span><span class="seg" id="acct-period"></span></h2><table id="by-account"></table><div id="account-pie"></div></div>
 </section>
 <section class="card"><h2>Recent switches</h2><div class="timeline" id="events"></div></section>
 <p class="muted small">Cost-equivalent = API list prices (cache read 0.1&times;, write 1.25&times;); actual spend is covered by the subscriptions.</p>
@@ -1679,7 +1685,7 @@ const cleanURL = new URL(location.href);
 cleanURL.searchParams.delete('key');
 history.replaceState(null, '', cleanURL.pathname + cleanURL.search + cleanURL.hash);
 const $=id=>document.getElementById(id), H=3600, D=86400, PERIODS={'24 h':'24h','7 d':'7d','30 d':'30d','All time':'all'};
-let period='7 d', showTable=false, WK=null;
+let period='7 d', acctPeriod='24 h', showTable=false, WK=null;
 function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function fmt(n){n=n||0;return n>=1e6?(n/1e6).toFixed(n>=1e7?0:1)+'M':n>=1e3?(n/1e3).toFixed(n>=1e4?0:1)+'k':''+Math.round(n)}
 function money(v){v=v||0;return '$'+(v>=100?Math.round(v).toLocaleString():v.toFixed(2))}
@@ -1775,6 +1781,7 @@ $('weekly').onpointerleave=e=>{if(e.pointerType==='touch') return;  // touch fir
   $('tip').style.display='none'; const xh=document.querySelector('#xh'); if(xh) xh.setAttribute('opacity','0')};
 $('tbl').onclick=()=>{showTable=!showTable; $('tbl').textContent=showTable?'Chart':'Table'; refresh()};
 $('period').onclick=e=>{const p=e.target.dataset&&e.target.dataset.p; if(p){period=p; refresh()}};
+$('acct-period').onclick=e=>{const p=e.target.dataset&&e.target.dataset.p; if(p){acctPeriod=p; refresh()}};
 const api=path=>fetch(path,{headers:KEY?{Authorization:'Bearer '+KEY}:{},cache:'no-store'});
 async function refresh(){
   const [sr, tr] = await Promise.all([api('/rotate/status'), api('/rotate/stats')]);
@@ -1815,8 +1822,9 @@ async function refresh(){
       +cell((stats.by_device||{})[name],'24 h')+cell(((per['7d']||{}).device||{})[name],'7 d')+cell(((per['30d']||{}).device||{})[name],'30 d')
       +cell(((per.all||{}).device||{})[name],'All time'+(per.since?' since '+esc(per.since):''))+`<td data-l="30-day trend">${spark((per.trend||{})[name])}</td></tr>`}
   $('devices').innerHTML=dh;
-  // models over the chosen period; accounts over 24 h
-  $('period').innerHTML=Object.keys(PERIODS).map(p=>`<button data-p="${p}" class="${p===period?'on':''}">${p}</button>`).join('');
+  // models and accounts, each over its own chosen period
+  const segs=cur=>Object.keys(PERIODS).map(p=>`<button data-p="${p}" class="${p===cur?'on':''}">${p}</button>`).join('');
+  $('period').innerHTML=segs(period); $('acct-period').innerHTML=segs(acctPeriod);
   const byCost=o=>Object.entries(o||{}).sort((a,b)=>(b[1].cost_usd||0)-(a[1].cost_usd||0));
   const rows=o=>byCost(o).map(([n,b])=>{const prompt=(b.input_tokens||0)+(b.cache_read||0)+(b.cache_write||0);
     return `<tr><td>${esc(n)}</td><td>${fmt(b.requests)}</td><td>${fmt(tok(b))}</td><td>${prompt?Math.round((b.cache_read||0)/prompt*100):0}%</td><td>${money(b.cost_usd)}</td></tr>`}).join('');
@@ -1824,8 +1832,10 @@ async function refresh(){
   const models=PERIODS[period]==='24h'?stats.by_model:(per[PERIODS[period]]||{}).model;
   $('models').innerHTML=head.replace('{}','Model')+rows(models);
   $('model-pie').innerHTML=pie(byCost(models));
-  $('by-account').innerHTML=head.replace('{}','Account')+rows(stats.by_account);
-  $('account-pie').innerHTML=pie(byCost(stats.by_account));
+  const accounts=PERIODS[acctPeriod]==='24h'?stats.by_account:(per[PERIODS[acctPeriod]]||{}).account;
+  $('by-account').innerHTML=head.replace('{}','Account')+rows(accounts);
+  $('account-pie').innerHTML=pie(byCost(accounts));
+  $('acct-since').innerHTML=PERIODS[acctPeriod]!=='24h'&&per.account_since?`since ${esc(per.account_since)}`:'';
   $('events').innerHTML=(st.recent_events||[]).slice().reverse().map(e=>`<div><span class="muted">${esc(String(e.ts||'').slice(5,16).replace('T',' '))}</span><span>${esc(e.from)} &rarr; ${esc(e.to)}</span><span class="badge" style="margin-left:auto">${esc(e.reason)}</span></div>`).join('')||'<span class="muted">none</span>';
   $('upd').textContent='updated '+new Date().toLocaleTimeString();
 }

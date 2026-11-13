@@ -22,11 +22,11 @@ def main():
     harness = r'''
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
-const script = JSON.parse(process.argv[1]);
+const script = JSON.parse(process.argv[1]), panel = JSON.parse(process.argv[2]);
 const value = '<mark data-audit="marker">&\'"</mark>';
 const elements = {}, urls = [], replaced = [];
 const usage = {requests:1,input_tokens:1,output_tokens:1,cache_read:0,cache_write:0,cost_usd:1};
-const stats = {devices:{[value]:{last_model:value,last_account:value,key_suffix:value}},alerts:[{level:'warn',text:value}],by_device:{[value]:usage},by_model:{[value]:usage},by_account:{[value]:usage},periods:{since:value,'7d':{device:{[value]:usage},model:{[value]:usage}},'30d':{device:{[value]:usage},model:{[value]:usage}},all:{device:{[value]:usage,[value+'-gone']:usage},model:{[value]:usage}},trend:{[value]:[0,1,2]}}};
+const stats = {devices:{[value]:{last_model:value,last_account:value,key_suffix:value}},alerts:[{level:'warn',text:value}],by_device:{[value]:usage},by_model:{[value]:usage},by_account:{[value]:usage},periods:{since:value,account_since:value,'7d':{device:{[value]:usage},model:{[value]:usage},account:{[value]:usage}},'30d':{device:{[value]:usage},model:{[value]:usage},account:{[value]:usage}},all:{device:{[value]:usage,[value+'-gone']:usage},model:{[value]:usage},account:{[value]:usage}},trend:{[value]:[0,1,2]}}};
 const status = {accounts:{[value]:{priority:100,private_to:[value,value+"-2"],reset_5h:1793883600,reset_7d:1793883600,reset_5h_in_min:30,reset_7d_in_h:50}},active_account:value,strategy:value,switch_threshold:.8,switch_threshold_7d:.98,recent_events:[{ts:value,from:value,to:value,reason:value}],weekly:{series:[[0,0,100],[3600,10,100]],projection:[[3600,10,100],[7200,100,100]],rate_per_day:5,eta:7200,back:9000,back_account:value,capacity:200,demand:{rate_per_day:58.5,measured_h:61.2,window_h:72,week_pct:410.4,capacity_pct:400,accounts_needed:value,shortfall_pct:10.4,note:null}}};
 const makeStorage=(init)=>{const m=new Map(Object.entries(init||{}));return {m,getItem:k=>m.has(k)?m.get(k):null,setItem:(k,v)=>{m.set(k,String(v))},removeItem:k=>{m.delete(k)}}};
 const makeContext=(search,storage,code)=>{
@@ -68,6 +68,20 @@ const context = vm.createContext({URL,URLSearchParams,location:{search:'?key=fak
   assert.equal(slices('model-pie'),1,'the 24 h period must redraw the model pie');
   elements.period.onclick({target:{dataset:{p:'7 d'}}}); await vm.runInContext('refresh()',context,{timeout:1000});
   assert.equal(slices('model-pie'),7,'the 7 d period must redraw the model pie');
+  assert(!elements['acct-since'].innerHTML,'24 h must show no since note');
+  const acct7=stats.periods['7d'].account, manyAcct={}; for(let i=0;i<8;i++) manyAcct['a'+i]={...usage,cost_usd:10-i};
+  stats.periods['7d'].account=manyAcct;
+  elements['acct-period'].onclick({target:{dataset:{p:'7 d'}}}); await vm.runInContext('refresh()',context,{timeout:1000});
+  assert.equal(slices('account-pie'),7,'the 7 d period must redraw the account pie');
+  assert(elements['by-account'].innerHTML.includes('<td>a5</td>'),'the 7 d period must redraw the account table');
+  assert.equal(slices('model-pie'),7,'the account toggle must leave the model pie alone');
+  assert(elements['acct-since'].innerHTML.includes('since &lt;mark') && !elements['acct-since'].innerHTML.includes('<mark'),'since note missing or unescaped');
+  assert(elements['acct-period'].innerHTML.includes('data-p="7 d" class="on"'),'7 d button not marked');
+  elements['acct-period'].onclick({target:{dataset:{p:'24 h'}}}); await vm.runInContext('refresh()',context,{timeout:1000});
+  assert.equal(slices('account-pie'),1,'the 24 h period must go back to by_account');
+  stats.periods['7d'].account=acct7;
+  assert(panel.includes('.accounts>.card:last-child:nth-child(odd){grid-column:1/-1;justify-self:center'),'odd last card rule missing');
+  assert(/\.pie\{[^}]*justify-content:center/.test(panel),'pie not centred');
   stats.by_model={}; stats.periods['7d'].model={}; stats.by_account={x:{...usage,cost_usd:0}};
   await vm.runInContext('refresh()',context,{timeout:1000});
   for(const id of ['model-pie','account-pie']) assert(elements[id].innerHTML.includes('no usage') && !elements[id].innerHTML.includes('<svg'),id+' must show no usage');
@@ -129,7 +143,7 @@ const context = vm.createContext({URL,URLSearchParams,location:{search:'?key=fak
   console.log('panel JavaScript security checks passed');
 })().catch(error=>{console.error(error);process.exitCode=1});
 '''
-    subprocess.run([node, "-e", harness, json.dumps(script)], check=True)
+    subprocess.run([node, "-e", harness, json.dumps(script), json.dumps(panel)], check=True)
 
 
 if __name__ == "__main__":
