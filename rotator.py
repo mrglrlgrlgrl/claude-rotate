@@ -1068,25 +1068,32 @@ def weekly_series(now: float) -> list:
 
 
 def weekly_outlook(now: float) -> dict:
-    """The chart's series plus a PROJECT_DAYS projection: spend the last 24 h rate
+    """The chart's series plus a PROJECT_DAYS projection: spend the burn rate
     consume-first (soonest weekly reset first); while every enabled account is at
-    100% usage pauses until the next reset. `eta` is the first such moment."""
+    100% usage pauses until the next reset. `eta` is the first such moment. The rate
+    covers all retained history: stretches that start in the last RATE_RECENT_DAYS
+    weigh 1, older ones RATE_OLDER_WEIGHT, and only stretches with an account
+    available (weekly_stretches) count."""
     points = weekly_series(now)
     out = {"series": [p[:3] for p in points], "projection": [], "rate_per_day": None,
            "eta": None, "back": None, "back_account": None,
            "capacity": round(sum(weight(n) for n in weekly_snapshot()) * 100)}
-    day = [p for p in points if p[0] >= now - 86400]
-    # Usage cannot rise while every account is spent, so time at the limit would
-    # understate demand: count only the stretches with quota left (as the panel shades).
-    span = sum(b[0] - a[0] for a, b in zip(day, day[1:]) if a[2] - a[1] > 0.1)
-    if span < 3600:
-        out["note"] = "not enough history with quota left yet to measure a rate"
+    # Usage cannot rise while no account can serve, so that time would understate
+    # demand: count only the available stretches, the recent week at full weight.
+    recent = now - RATE_RECENT_DAYS * 86400
+    num = den = counted = 0.0
+    for start, sec, rise, ok in weekly_stretches(now):
+        if ok:
+            w = 1.0 if start >= recent else RATE_OLDER_WEIGHT
+            num, den, counted = num + w * rise, den + w * sec, counted + sec
+    if counted < RATE_MIN_S:
+        out["note"] = "not enough history with an account available yet to measure a rate"
         return out
-    rate = (day[-1][3] - day[0][3]) / span  # % of one weekly quota per second
+    rate = num / den  # % of one weekly quota per second
     out["rate_per_day"] = round(rate * 86400, 1)
     accts = {n: [u * 100, reset] for n, (u, reset) in weekly_snapshot().items()}
     if rate <= 0 or not accts:
-        out["note"] = "weekly usage did not rise over the last 24 h"
+        out["note"] = "weekly usage did not rise in the usage history"
         return out
     for a in accts.values():
         while a[1] <= now:  # reset passed with no reading since: assume the next week follows
@@ -1127,23 +1134,30 @@ def weekly_outlook(now: float) -> dict:
 
 
 DEMAND_DAYS, DEMAND_MIN_S = 7, 6 * 3600
+RATE_RECENT_DAYS, RATE_OLDER_WEIGHT, RATE_MIN_S = 7, 0.25, 3600
+
+
+def weekly_stretches(now: float) -> list:
+    """One (start ts, seconds, spent rise, available) per pair of consecutive
+    weekly_series points over all of HISTORY plus now. `available` holds when, at the
+    first sample, an enabled account was under both its allowance then and HARD_LIMIT,
+    so time when nothing could serve does not understate a rate.
+    The history holds no 5h data: time when every account was 5h-limited still counts."""
+    samples = HISTORY + [{"ts": now, "accounts": weekly_snapshot()}]
+    points = weekly_series(now)
+    return [(a[0], b[0] - a[0], b[3] - a[3],
+             any(n in ACCOUNTS and not disabled(n) and u < HARD_LIMIT
+                 and u < cap_allowance(n, reset, sample["ts"])
+                 for n, (u, reset) in sample["accounts"].items()))
+            for sample, a, b in zip(samples, points, points[1:])]
 
 
 def weekly_demand(now: float) -> dict:
     """Weekly demand over the last DEMAND_DAYS (all history while shorter), in % of
-    one weight-1 weekly quota. A stretch between two samples counts when, at its
-    first sample, an enabled account was under both its allowance then and
-    HARD_LIMIT, so time when nothing could serve does not understate the rate.
-    The history holds no 5h data: time when every account was 5h-limited still counts."""
-    samples = HISTORY + [{"ts": now, "accounts": weekly_snapshot()}]
-    pairs = [(s, p) for s, p in zip(samples, weekly_series(now)) if p[0] >= now - DEMAND_DAYS * 86400]
-    counted = rise = 0.0
-    for (sample, a), (_, b) in zip(pairs, pairs[1:]):
-        if any(n in ACCOUNTS and not disabled(n) and u < HARD_LIMIT
-               and u < cap_allowance(n, reset, sample["ts"])
-               for n, (u, reset) in sample["accounts"].items()):
-            counted += b[0] - a[0]
-            rise += b[3] - a[3]
+    one weight-1 weekly quota, from the available stretches of weekly_stretches."""
+    stretches = [s for s in weekly_stretches(now) if s[0] >= now - DEMAND_DAYS * 86400]
+    counted = sum(sec for _, sec, _, ok in stretches if ok)
+    rise = sum(r for _, _, r, ok in stretches if ok)
     out = dict.fromkeys(("rate_per_day", "measured_h", "window_h", "week_pct",
                          "capacity_pct", "accounts_needed", "shortfall_pct"))
     if counted < DEMAND_MIN_S:
@@ -1154,7 +1168,7 @@ def weekly_demand(now: float) -> dict:
     capacity = sum(weight(n) * ACCOUNTS[n].get("weekly_cap", 1.0) for n in ACCOUNTS
                    if not disabled(n)) * 100
     out.update(rate_per_day=round(rate, 1), measured_h=round(counted / 3600, 1),
-               window_h=round((pairs[-1][1][0] - pairs[0][1][0]) / 3600, 1),
+               window_h=round(sum(sec for _, sec, _, _ in stretches) / 3600, 1),
                week_pct=round(week, 1), capacity_pct=round(capacity, 1),
                accounts_needed=math.ceil(round(week, 1) / 100),
                shortfall_pct=round(max(0.0, week - capacity), 1))

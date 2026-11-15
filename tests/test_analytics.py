@@ -257,23 +257,31 @@ check("spent counts rises after the first sample, a new window in full",
       [p[3] for p in s] == [0, 0, 20, 40])
 
 out = R.weekly_outlook(now)
-check("rate taken over the last 24 h; the series goes out without spent",
-      out["rate_per_day"] == 48.0 and out["capacity"] == 200
+# All three stretches (10 h each) start inside the last 7 days, so each weighs 1 and
+# every one is available (b is under its allowance): rate = (0 + 20 + 20) / 30 h
+# = 4/3 points/h = 32.0/day.
+check("rate weighted over all history; the series goes out without spent",
+      out["rate_per_day"] == 32.0 and out["capacity"] == 200
       and [len(p) for p in out["series"]] == [3, 3, 3, 3])
 proj = out["projection"]
-# b resets at +50 h with its week fully used (-100); everything is spent at +120 h and
-# usage pauses until a resets at +148 h (-100); then it resumes until the 7.5-day horizon.
-check("7.5-day projection drops usage at each reset and pauses while all is spent",
-      [p[1] for p in proj] == [60, 160, 60, 200, 200, 100, 164])
+# Spend 4/3 points/h consume-first (b resets first). b resets at +50 h: 66.7 spent into
+# b (30 -> 96.7), total 126.7, then b drops to 0 (total 30). a resets at +148 h: 98 h x
+# 4/3 = 130.7 spent, a fills to 100 (70) and b takes 60.7, total 160.7, then a drops to
+# 0 (60.7). The 7.5-day horizon (+180 h) adds 32 h x 4/3 = 42.7: b fills (39.3) and a
+# takes 3.3, total 103.3. Nothing runs out first, so there is no ETA.
+check("7.5-day projection drops usage at each reset",
+      [p[1] for p in proj] == [60, 126.7, 30, 160.7, 60.7, 103.3])
 check("projected capacity stays flat", all(p[2] == 200 for p in proj))
-check("ETA is the first shortfall; quota returns at a's reset",
-      abs(out["eta"] - (now + 120 * H)) <= 5 and out["back"] == round(new_a)  # ts rounding
-      and out["back_account"] == "a" and proj[-1][0] == round(now + 7.5 * 86400))
+check("no shortfall inside the horizon: no ETA, projection ends at 7.5 days",
+      out["eta"] is None and out["back"] is None and out["back_account"] is None
+      and proj[-1][0] == round(now + 7.5 * 86400))
 
 weekly_state(0.95, 0.95)
 out = R.weekly_outlook(now)
-check("run-out ETA when the remaining 10 points go at 8.5 points/h",
-      abs(out["eta"] - (now + 10 / 8.5 * H)) <= 1 and out["back"] == round(rb)
+# Stretch rises 0, 20 and 150 (a 0.10 -> 0.95 plus b 0.30 -> 0.95) over 30 h: rate =
+# 170 / 30 h = 17/3 points/h. 10 points are left, so everything runs out 30/17 h on.
+check("run-out ETA when the remaining 10 points go at 17/3 points/h",
+      abs(out["eta"] - (now + 30 / 17 * H)) <= 1 and out["back"] == round(rb)
       and out["back_account"] == "b")
 
 R.ACCOUNTS["b"]["weight"] = 0.25  # b becomes a quarter-size plan
@@ -291,14 +299,14 @@ out = R.weekly_outlook(now)
 check("rate ignores time at the limit: 100 points in the 10 h with quota left",
       out["rate_per_day"] == 240.0 and abs(out["eta"] - now) <= 1 and out["back_account"] == "a")
 
-# flat usage over the last 24 h: no rate, so a note and no projection
+# flat usage over all history: no rate, so a note and no projection
 R.HISTORY = [{"ts": now - 20 * H, "accounts": {"a": [0.40, now + 5 * H], "b": [0.40, rb]}},
              {"ts": now - 10 * H, "accounts": {"a": [0.40, now + 5 * H], "b": [0.40, rb]}}]
 R.STATE = {"active_account": "a", "events": [], "accounts": {
     "a": {"util_7d": 0.4, "reset_7d": now + 5 * H}, "b": {"util_7d": 0.4, "reset_7d": rb}}}
 out = R.weekly_outlook(now)
 check("flat weekly usage: the note says it did not rise, with no projection or ETA",
-      out["note"] == "weekly usage did not rise over the last 24 h"
+      out["note"] == "weekly usage did not rise in the usage history"
       and out["rate_per_day"] == 0.0 and out["projection"] == [] and out["eta"] is None)
 
 # a weekly reset already past is rolled forward by 7 days before the forecast
@@ -319,6 +327,50 @@ check("the rolled reset (past + 7 days) is the soonest return, within 1 s",
 R.HISTORY = []
 check("no rate without an hour of history", R.weekly_outlook(now)["eta"] is None
       and "not enough history" in R.weekly_outlook(now)["note"])
+
+
+# 14 days of hourly samples, one weight-1 account. Week 1 (hours 0-167) rises 0.25
+# points/h (6/day); its reset lands at hour 168, where week 2 starts with that first
+# hour's 0.25 counted in full, so the older week spends 42 points over 168 h. Week 2 is
+# the last 7 days: `recent` points per hour until hour 312, then `last` points/h for the last day.
+def burn_fixture(recent, last):
+    def used(h):
+        if h < 168:
+            return 0.25 * h
+        return 0.25 + recent * (min(h, 312) - 168) + (last * (h - 312) if h > 312 else 0)
+    R.ACCOUNTS = {"a": {"name": "a"}}
+    r1, r2 = now - 7 * 86400, now + 86400
+    R.HISTORY = [{"ts": now - (336 - h) * H, "accounts": {"a": [used(h) / 100, r1 if h < 168 else r2]}}
+                 for h in range(336)]
+    R.STATE = {"active_account": "a", "events": [], "accounts": {
+        "a": {"util_7d": used(336) / 100, "reset_7d": r2}}}
+    return R.weekly_outlook(now)
+
+
+# Last 7 days: 6/day for 6 days (36 points) and 24 on the last day = 60 points in 168 h at
+# weight 1; the older week is 42 points in 168 h at weight 0.25. rate = (60 + 0.25 x 42)
+# / (7 + 0.25 x 7 days) = 70.5 / 8.75 = 8.06 points/day. The old 24 h rate was 24.0.
+out = burn_fixture(0.25, 1.0)
+check("busy last day: the burn rate is weighted to 8.1/day, not the last day's 24.0",
+      out["rate_per_day"] == 8.1)
+# Last 7 days at 12/day = 84 points: (84 + 0.25 x 42) / 8.75 = 94.5 / 8.75 = 10.8/day.
+out = burn_fixture(0.5, 0.5)
+check("steady 12/day last week over 6/day before: weighted burn rate 10.8/day",
+      out["rate_per_day"] == 10.8)
+
+# paced out by weekly_pacing: the first 12 h run at 1 point/h at 0.60+ usage, above the
+# allowance at the sample's time (pacing, 0m look-ahead), so they are left out; the last 12 h
+# rise 0.2 points/h under it. rate = 12 x 0.2 / 12 h = 0.2 points/h = 4.8/day; counting the
+# paced-out stretches too would give (11 + 2.4) / 24 h = 13.4/day.
+R.ACCOUNTS = {"a": {"name": "a", "weekly_pacing": True, "pace_lookahead": "0m"}}
+R.HISTORY = [{"ts": now - (24 - i) * H, "accounts": {"a": [0.60 + 0.01 * i, now + 3.5 * 86400]}}
+             for i in range(12)] \
+    + [{"ts": now - (12 - i) * H, "accounts": {"a": [0.002 * i, now + 6 * 86400]}}
+       for i in range(12)]
+R.STATE = {"active_account": "a", "events": [], "accounts": {
+    "a": {"util_7d": 0.024, "reset_7d": now + 6 * 86400}}}
+check("a stretch when every account is at its paced allowance is left out of the burn rate",
+      R.weekly_outlook(now)["rate_per_day"] == 4.8)
 
 # --- weekly demand: the rate over stretches when an account could serve ---
 R1, R2 = now + 20 * H, now + 20 * H + 7 * 86400
