@@ -371,9 +371,10 @@ rate-limit headers:
   when the next reset brings quota back. The rate counts only rises in usage,
   so a reset does not cancel consumption. It covers all retained history, with
   the last 7 days weighted 4 times the older days, and counts only time when an
-  account was available under its allowance and `hard_limit`. Periods when every account was or
-  will be at its limit are shaded. The chart opens on 7.5 days either side of
-  now (3.5 days on a phone) and scrolls back to the first sample. Hover or tap
+  account was available under its allowance and `hard_limit`. Periods when
+  every account was or will be at its limit are shaded. The chart opens on 7.5
+  days either side of now (3.5 days on a phone) and scrolls back to the first
+  sample. Hover or tap
   for values; **Table** shows the same data as a table. History is sampled
   every 30 min into `usage_history.json` next to `state.json` and kept 14 days.
   One line under the chart gives the weekly demand: the rate over the last

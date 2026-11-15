@@ -324,6 +324,29 @@ out = R.weekly_outlook(now)
 check("the rolled reset (past + 7 days) is the soonest return, within 1 s",
       out["back_account"] == "a" and abs(out["back"] - (past + 7 * 86400)) <= 1)
 
+# A rate high enough to spend all capacity inside the horizon. b starts at 0.0, so each
+# 10 h stretch rises 20 points (b +20; a +10, b +10; a +20), all weight 1 and all
+# available (under the 1.0 allowance):
+# rate = 60 / 30 h = 2 points/h = 48.0/day. Now both accounts are at 30 (60 of 200).
+# b resets at +50 h with its week fully used (-100): at 2 points/h usage reaches 60 + 100 =
+# 160 just before, drops to 60. Consume-first, 60 more points are spent at 2/h by +120 h:
+# usage 200 = capacity, so everything is spent (the ETA). Usage then pauses flat at 200
+# until a resets at +148 h (-100, to 100), and spends 32 h x 2 = 64 more by the 7.5-day
+# horizon (+180 h): 164.
+R.ACCOUNTS = {"a": {"name": "a"}, "b": {"name": "b"}}
+R.HISTORY = [{"ts": now - 30 * H, "accounts": {"a": [0.90, old_a], "b": [0.00, rb]}},
+             {"ts": now - 20 * H, "accounts": {"a": [0.00, old_a], "b": [0.20, rb]}},
+             {"ts": now - 10 * H, "accounts": {"a": [0.10, new_a], "b": [0.30, rb]}}]
+weekly_state(0.30, 0.30)
+out = R.weekly_outlook(now)
+check("a high weighted rate: the projection pauses flat at capacity and resumes at a's reset",
+      out["rate_per_day"] == 48.0
+      and [p[1] for p in out["projection"]] == [60, 160, 60, 200, 200, 100, 164]
+      and all(p[2] == 200 for p in out["projection"]))
+check("high rate: ETA is the first shortfall at +120 h; quota returns at a's reset",
+      abs(out["eta"] - (now + 120 * H)) <= 5 and out["back"] == round(new_a)
+      and out["back_account"] == "a")
+
 R.HISTORY = []
 check("no rate without an hour of history", R.weekly_outlook(now)["eta"] is None
       and "not enough history" in R.weekly_outlook(now)["note"])
