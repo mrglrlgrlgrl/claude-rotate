@@ -1133,7 +1133,6 @@ def weekly_outlook(now: float) -> dict:
     return out
 
 
-DEMAND_DAYS, DEMAND_MIN_S = 7, 6 * 3600
 RATE_RECENT_DAYS, RATE_OLDER_WEIGHT, RATE_MIN_S = 7, 0.25, 3600
 
 
@@ -1152,24 +1151,18 @@ def weekly_stretches(now: float) -> list:
             for sample, a, b in zip(samples, points, points[1:])]
 
 
-def weekly_demand(now: float) -> dict:
-    """Weekly demand over the last DEMAND_DAYS (all history while shorter), in % of
-    one weight-1 weekly quota, from the available stretches of weekly_stretches."""
-    stretches = [s for s in weekly_stretches(now) if s[0] >= now - DEMAND_DAYS * 86400]
-    counted = sum(sec for _, sec, _, ok in stretches if ok)
-    rise = sum(r for _, _, r, ok in stretches if ok)
-    out = dict.fromkeys(("rate_per_day", "measured_h", "window_h", "week_pct",
-                         "capacity_pct", "accounts_needed", "shortfall_pct"))
-    if counted < DEMAND_MIN_S:
+def weekly_demand(rate_per_day) -> dict:
+    """Weekly demand in % of one weight-1 weekly quota: 7 days of the burn rate
+    weekly_outlook reports (None while it has too little history), against the
+    combined capacity of the enabled accounts."""
+    out = dict.fromkeys(("week_pct", "capacity_pct", "accounts_needed", "shortfall_pct"))
+    if rate_per_day is None:
         out["note"] = "not enough history with an account available yet"
         return out
-    rate = rise / counted * 86400
-    week = 7 * rate
+    week = 7 * rate_per_day
     capacity = sum(weight(n) * ACCOUNTS[n].get("weekly_cap", 1.0) for n in ACCOUNTS
                    if not disabled(n)) * 100
-    out.update(rate_per_day=round(rate, 1), measured_h=round(counted / 3600, 1),
-               window_h=round(sum(sec for _, sec, _, _ in stretches) / 3600, 1),
-               week_pct=round(week, 1), capacity_pct=round(capacity, 1),
+    out.update(week_pct=round(week, 1), capacity_pct=round(capacity, 1),
                accounts_needed=math.ceil(round(week, 1) / 100),
                shortfall_pct=round(max(0.0, week - capacity), 1))
     out["note"] = None
@@ -1203,6 +1196,7 @@ async def rotate_status(request: Request):
     if not panel_allowed(request):
         return JSONResponse({"error": "unknown device key"}, status_code=401)
     now = time.time()
+    outlook = weekly_outlook(now)
     accounts = {}
     for name in ACCOUNTS:
         info = dict(STATE["accounts"].get(name, {}))
@@ -1240,7 +1234,7 @@ async def rotate_status(request: Request):
         "recent_events": STATE["events"][-10:],
         "storage_errors": STORAGE_ERRORS,
         "config": CONFIG_STATUS,
-        "weekly": {**weekly_outlook(now), "demand": weekly_demand(now)},
+        "weekly": {**outlook, "demand": weekly_demand(outlook["rate_per_day"])},
         "version": {"version": VERSION, "revision": REVISION},
     }
 
@@ -1793,7 +1787,7 @@ function demandLine(d){
   if(!d) return '';
   if(d.week_pct==null) return `<div class="sentence">${esc(d.note)}</div>`;
   const n=d.accounts_needed;
-  return `<div class="sentence">Over the last ${esc((d.window_h/24).toFixed(1))} days (${esc(Math.round(d.measured_h))} h with an account available), demand is about ${esc(Math.round(d.week_pct))}% of one weekly quota per week: ${esc(n)} weight-1 account${n===1?'':'s'}; you have ${esc(Math.round(d.capacity_pct))}%.</div>`}
+  return `<div class="sentence">At that rate a week needs ${esc(Math.round(d.week_pct))}% of one weekly quota: ${esc(n)} weight-1 account${n===1?'':'s'}; you have ${esc(Math.round(d.capacity_pct))}%.</div>`}
 function sentence(p,now){
   return sentence1(p,now)+demandLine(p.demand)}
 function sentence1(p,now){

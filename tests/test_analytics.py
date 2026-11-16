@@ -395,83 +395,54 @@ R.STATE = {"active_account": "a", "events": [], "accounts": {
 check("a stretch when every account is at its paced allowance is left out of the burn rate",
       R.weekly_outlook(now)["rate_per_day"] == 4.8)
 
-# --- weekly demand: the rate over stretches when an account could serve ---
-R1, R2 = now + 20 * H, now + 20 * H + 7 * 86400
+# --- weekly demand: 7 days of the burn rate against combined capacity ---
+# The window, the minimum of counted hours and the pacing exclusion belong to the burn rate
+# (weekly_outlook, tested above); weekly_demand takes that rate and has none of its own.
 R.ACCOUNTS = {"a": {"name": "a", "weekly_cap": 0.3}, "b": {"name": "b", "weekly_cap": 0.3}}
-# first 12 h: both accounts over their 0.3 allowance (rising 0.01/h each); then a new
-# week at 0, rising 0.02/h each, under the allowance
-R.HISTORY = [{"ts": now - (24 - i) * H, "accounts": (
-    {n: [0.40 + 0.01 * i, R1] for n in "ab"} if i < 12 else {n: [0.02 * (i - 12), R2] for n in "ab"})}
-    for i in range(24)]
 R.STATE = {"active_account": "a", "events": [], "accounts": {
-    n: {"util_7d": 0.24, "reset_7d": R2} for n in "ab"}}
-d = R.weekly_demand(now)
-check("an hour when every account is over its allowance is left out of the rate",
-      d["rate_per_day"] == 96.0 and d["measured_h"] == 12.0 and d["window_h"] == 24.0)
+    n: {"util_7d": 0.24, "reset_7d": now + 20 * H} for n in "ab"}}
+d = R.weekly_demand(96.0)
 check("week_pct is 7 days of the rate; capacity sums weight x weekly_cap",
       d["week_pct"] == 672.0 and d["capacity_pct"] == 60.0 and d["accounts_needed"] == 7
       and d["shortfall_pct"] == 612.0 and d["note"] is None)
+check("the demand carries no rate or counted hours of its own",
+      set(d) == {"week_pct", "capacity_pct", "accounts_needed", "shortfall_pct", "note"})
 R.ACCOUNTS = {n: {"name": n} for n in "ab"}
-check("no weekly_cap means capacity 100% per account", R.weekly_demand(now)["capacity_pct"] == 200.0)
+check("no weekly_cap means capacity 100% per account", R.weekly_demand(96.0)["capacity_pct"] == 200.0)
 R.ACCOUNTS = {n: {"name": n, "weekly_cap": 0.5} for n in "ab"}
-check("a 7-day cap of 0.5 halves capacity_pct", R.weekly_demand(now)["capacity_pct"] == 100.0)
-
-# paced out by weekly_pacing: allowance at the sample's time, not now
-R.ACCOUNTS = {n: {"name": n, "weekly_pacing": True, "pace_lookahead": "0m"} for n in "ab"}
-R.HISTORY = [{"ts": now - (24 - i) * H, "accounts": {n: [0.60, now + 3.5 * 86400] for n in "ab"}}
-             for i in range(12)] \
-    + [{"ts": now - (12 - i) * H, "accounts": {n: [0.0, now + 6 * 86400] for n in "ab"}}
-       for i in range(12)]
-R.STATE = {"active_account": "a", "events": [], "accounts": {
-    n: {"util_7d": 0.0, "reset_7d": now + 6 * 86400} for n in "ab"}}
-check("pacing allowance is taken at the sample's time",
-      R.weekly_demand(now)["measured_h"] == 12.0)
+check("a 7-day cap of 0.5 halves capacity_pct", R.weekly_demand(96.0)["capacity_pct"] == 100.0)
 R.ACCOUNTS = {n: {"name": n} for n in "ab"}
-
-# 2.5 days of history is used whole
-R.HISTORY = [{"ts": now - (60 - i) * H, "accounts": {n: [0.01 * i, now + 100 * H] for n in "ab"}}
-             for i in range(60)]
-R.STATE = {"active_account": "a", "events": [], "accounts": {
-    n: {"util_7d": 0.60, "reset_7d": now + 100 * H} for n in "ab"}}
-d = R.weekly_demand(now)
-check("a history shorter than 7 days is used whole",
-      d["window_h"] == 60.0 and d["measured_h"] == 60.0 and d["rate_per_day"] == 48.0)
-# only the last 7 days count
-R.HISTORY = [{"ts": now - (240 - i) * H, "accounts": {"a": [0.0, now + 100 * H]}}
-             for i in range(60)] + [
-    {"ts": now - (24 - i) * H, "accounts": {"a": [0.01 * i, now + 100 * H]}} for i in range(24)]
-R.ACCOUNTS = {"a": {"name": "a"}}
-R.STATE = {"active_account": "a", "events": [], "accounts": {
-    "a": {"util_7d": 0.24, "reset_7d": now + 100 * H}}}
-d = R.weekly_demand(now)
-check("older history than 7 days is outside the window",
-      d["window_h"] == 24.0 and d["rate_per_day"] == 24.0)
-
-# under 6 counted hours: nulls and the note
-R.HISTORY = [{"ts": now - (5 - i) * H, "accounts": {"a": [0.01 * i, now + 100 * H]}} for i in range(5)]
-d = R.weekly_demand(now)
-check("under 6 counted hours gives the note and nulls",
+d = R.weekly_demand(None)
+check("no rate gives the note and nulls",
       d["note"] == "not enough history with an account available yet"
-      and all(d[k] is None for k in ("rate_per_day", "measured_h", "window_h", "week_pct",
-                                      "capacity_pct", "accounts_needed", "shortfall_pct")))
-R.HISTORY = []
-check("no history gives the note", R.weekly_demand(now)["week_pct"] is None)
-
-
-def demand_for(step):
-    R.HISTORY = [{"ts": now - (24 - i) * H, "accounts": {"a": [step * i, now + 100 * H]}}
-                 for i in range(24)]
-    R.STATE = {"active_account": "a", "events": [], "accounts": {
-        "a": {"util_7d": step * 24, "reset_7d": now + 100 * H}}}
-    return R.weekly_demand(now)
-
-
-d = demand_for(0.0239)
-check("accounts_needed rounds up: week_pct 401 gives 5", 401 <= d["week_pct"] < 402
+      and all(d[k] is None for k in ("week_pct", "capacity_pct", "accounts_needed", "shortfall_pct")))
+check("a zero rate needs no accounts", R.weekly_demand(0.0)["week_pct"] == 0.0
+      and R.weekly_demand(0.0)["accounts_needed"] == 0 and R.weekly_demand(0.0)["shortfall_pct"] == 0.0)
+d = R.weekly_demand(57.3)
+check("accounts_needed rounds up: week_pct 401.1 gives 5", d["week_pct"] == 401.1
       and d["accounts_needed"] == 5)
-d = demand_for(0.0237)
-check("week_pct just under 400 gives 4 accounts", 398 <= d["week_pct"] < 400
+d = R.weekly_demand(57.0)
+check("week_pct just under 400 gives 4 accounts", d["week_pct"] == 399.0
       and d["accounts_needed"] == 4)
+
+# /rotate/status builds the outlook once: demand.week_pct is 7 x weekly.rate_per_day
+R.ACCOUNTS = {n: {"name": n, "weekly_cap": 0.3} for n in "ab"}
+R.HISTORY = [{"ts": now - (24 - i) * H, "accounts": {n: [0.02 * i, now + 100 * H] for n in "ab"}}
+             for i in range(24)]
+R.STATE = {"active_account": "a", "events": [], "accounts": {
+    n: {"util_7d": 0.48, "reset_7d": now + 100 * H} for n in "ab"}}
+R.PANEL_TAILNET = True
+status = asyncio.run(R.rotate_status(type("Req", (), {"headers": {"tailscale-user-login": "x"}})()))
+wk = status["weekly"]
+check("/rotate/status: weekly.demand.week_pct is 7 x weekly.rate_per_day",
+      wk["rate_per_day"] is not None and wk["demand"]["week_pct"] == round(7 * wk["rate_per_day"], 1)
+      and wk["demand"]["note"] is None)
+R.HISTORY = []
+check("/rotate/status: no rate gives the demand note",
+      asyncio.run(R.rotate_status(type("Req", (), {"headers": {"tailscale-user-login": "x"}})()))
+      ["weekly"]["demand"]["week_pct"] is None)
+R.PANEL_TAILNET = False
+R.ACCOUNTS = {"a": {"name": "a"}}
 check("cap_allowance with no extra arguments is unchanged",
       R.cap_allowance("a") == 1.0)
 
