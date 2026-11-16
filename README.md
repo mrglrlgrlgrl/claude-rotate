@@ -344,7 +344,10 @@ rate-limit headers:
 
 - **Headline**: time until every account is spent, with when it happens and
   which reset brings quota back; tiles for weekly quota left, burn rate,
-  requests in the last 24 h and the 7-day cost-equivalent. Alerts (device over
+  requests in the last 24 h and the 7-day cost-equivalent. The burn rate
+  tile's How button opens a popup with the working: the window, the hours
+  and usage rise of the last 7 days and of the older days, and the sum that
+  gives the rate. Alerts (device over
   N tokens/hour, expensive-model usage, account near the switch threshold;
   thresholds in `config.json`) sit in a banner above it. An account whose
   token upstream refused with a 401 in the last hour also raises a warning
@@ -420,7 +423,7 @@ The 24 h figures come from the audit log. Longer periods come from
 minute. On first start it is rebuilt once from `audit.jsonl` and its rotated
 copies, so all time reaches back as far as those logs do.
 
-JSON endpoints: `/rotate/status` (accounts, each with its `private_to` owners as a list or null, its `weekly_cap`, `weekly_pacing` and `weekly_allowance` (the weekly use allowed now, or null with neither setting), + switch events, + `weekly.demand`, the weekly demand figures (`week_pct`, 7 x `weekly.rate_per_day`, with `capacity_pct`, `accounts_needed`, `shortfall_pct` and a `note` while there is no rate), + `version`, the running `version` and `revision`) and
+JSON endpoints: `/rotate/status` (accounts, each with its `private_to` owners as a list or null, its `weekly_cap`, `weekly_pacing` and `weekly_allowance` (the weekly use allowed now, or null with neither setting), + switch events, + `weekly.rate_calc`, the working of `weekly.rate_per_day` (`recent_days`, `older_weight`, `history_days`, `min_h`, and the `history_h`, `recent_h`, `older_h`, `recent_rise` and `older_rise` it counted; present with a `note` too), + `weekly.demand`, the weekly demand figures (`week_pct`, 7 x `weekly.rate_per_day`, with `capacity_pct`, `accounts_needed`, `shortfall_pct` and a `note` while there is no rate), + `version`, the running `version` and `revision`) and
 `/rotate/stats` (rollups, alerts, `model_devices`, the 24 h request count per model per device, and the longer `periods`), same `?key=` or `Authorization: Bearer`
 auth. Audit trail: `logs/audit.jsonl`, one JSON record per request, with a
 `session` field holding the client's own session id (Claude Code's

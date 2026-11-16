@@ -350,6 +350,10 @@ check("high rate: ETA is the first shortfall at +120 h; quota returns at a's res
 R.HISTORY = []
 check("no rate without an hour of history", R.weekly_outlook(now)["eta"] is None
       and "not enough history" in R.weekly_outlook(now)["note"])
+check("no history: rate_calc is present with zero hours beside the note",
+      R.weekly_outlook(now)["rate_calc"]["recent_h"] == 0.0 and R.weekly_outlook(now)["rate_calc"]["older_h"] == 0.0
+      and R.weekly_outlook(now)["rate_calc"]["history_h"] == 0.0 and R.weekly_outlook(now)["rate_calc"]["min_h"] == 1.0
+      and R.weekly_outlook(now)["rate_per_day"] is None)
 
 
 # 14 days of hourly samples, one weight-1 account. Week 1 (hours 0-167) rises 0.25
@@ -376,6 +380,16 @@ def burn_fixture(recent, last):
 out = burn_fixture(0.25, 1.0)
 check("busy last day: the burn rate is weighted to 8.1/day, not the last day's 24.0",
       out["rate_per_day"] == 8.1)
+# The working the panel shows: recent_h 168 (hours 168-335 and the last sample to now), 60
+# points; older_h 168, 42 points. rate_calc holds exactly the inputs of the reported rate.
+rc = out["rate_calc"]
+check("rate_calc on the burn fixture: hours, rises and weights of the two tiers",
+      (rc["recent_h"], rc["older_h"], rc["recent_rise"], rc["older_rise"]) == (168.0, 168.0, 60.0, 42.0)
+      and rc["older_weight"] == 0.25 and rc["recent_days"] == 7 and rc["history_days"] == 14
+      and rc["min_h"] == 1.0 and rc["history_h"] == 336.0)
+check("rate_calc recomputes to the reported rate: (60 + 0.25 x 42) / (168 + 0.25 x 168) x 24",
+      round((rc["recent_rise"] + rc["older_weight"] * rc["older_rise"])
+            / (rc["recent_h"] + rc["older_weight"] * rc["older_h"]) * 24, 1) == out["rate_per_day"])
 # Last 7 days at 12/day = 84 points: (84 + 0.25 x 42) / 8.75 = 94.5 / 8.75 = 10.8/day.
 out = burn_fixture(0.5, 0.5)
 check("steady 12/day last week over 6/day before: weighted burn rate 10.8/day",

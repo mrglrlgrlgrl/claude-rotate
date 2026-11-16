@@ -1081,11 +1081,22 @@ def weekly_outlook(now: float) -> dict:
     # Usage cannot rise while no account can serve, so that time would understate
     # demand: count only the available stretches, the recent week at full weight.
     recent = now - RATE_RECENT_DAYS * 86400
-    num = den = counted = 0.0
+    num = den = counted = history_s = 0.0
+    tiers = {True: [0.0, 0.0], False: [0.0, 0.0]}  # recent?: [seconds, rise]
     for start, sec, rise, ok in weekly_stretches(now):
+        history_s += sec
         if ok:
-            w = 1.0 if start >= recent else RATE_OLDER_WEIGHT
+            is_recent = start >= recent
+            w = 1.0 if is_recent else RATE_OLDER_WEIGHT
             num, den, counted = num + w * rise, den + w * sec, counted + sec
+            tiers[is_recent][0] += sec
+            tiers[is_recent][1] += rise
+    out["rate_calc"] = {  # the inputs of the rate below, for the panel's working
+        "recent_days": RATE_RECENT_DAYS, "older_weight": RATE_OLDER_WEIGHT,
+        "history_days": HISTORY_DAYS, "min_h": RATE_MIN_S / 3600,
+        "history_h": round(history_s / 3600, 1),
+        "recent_h": round(tiers[True][0] / 3600, 1), "older_h": round(tiers[False][0] / 3600, 1),
+        "recent_rise": round(tiers[True][1], 1), "older_rise": round(tiers[False][1], 1)}
     if counted < RATE_MIN_S:
         out["note"] = "not enough history with an account available yet to measure a rate"
         return out
@@ -1661,6 +1672,8 @@ PANEL_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta
  .key.dash{border-top-style:dashed} .key.band{height:10px;border:0;vertical-align:-1px;background:rgba(208,59,59,.3)}
  .wk{display:flex} .wk svg{display:block} .wk-scroll{flex:1;min-width:0;overflow-x:auto;scrollbar-width:thin;scrollbar-color:var(--axis) transparent} svg text{fill:var(--muted);font-size:11px;font-family:inherit}
  .tip{position:absolute;pointer-events:none;background:#262624;border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:12px;min-width:170px;display:none}
+ .pop{background:#262624;color:var(--ink);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:12px;max-width:min(420px,calc(100vw - 32px))}
+ .pop p{margin:0 0 6px} .pop p:last-child{margin:0}
  .tip .row{display:flex;justify-content:space-between;gap:12px} .tip .v{color:var(--ink);font-weight:600}
  .sentence{margin-top:8px;color:var(--ink2)}
  table{border-collapse:collapse;width:100%} th,td{padding:8px 10px;border-bottom:1px solid var(--grid);text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
@@ -1689,7 +1702,7 @@ PANEL_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta
 <section class="kpis">
  <div class="card hero"><div class="label">Every account spent in</div><div class="v" id="hero">–</div><div class="muted" id="hero-sub"></div></div>
  <div class="card tile"><div class="label">Weekly quota left</div><div class="v" id="k-left">–</div><div class="muted small" id="k-left-sub"></div></div>
- <div class="card tile"><div class="label">Burn rate</div><div class="v" id="k-rate">–</div><div class="muted small">of a weekly quota per day</div></div>
+ <div class="card tile"><div class="label">Burn rate <button class="linkbtn" popovertarget="rate-calc">How</button></div><div class="v" id="k-rate">–</div><div class="muted small">of a weekly quota per day</div></div>
  <div class="card tile"><div class="label">Requests, 24 h</div><div class="v" id="k-req">–</div><div class="muted small" id="k-req-sub"></div></div>
  <div class="card tile"><div class="label">Cost-equivalent, 7 d</div><div class="v" id="k-cost">–</div><div class="muted small" id="k-cost-sub"></div></div>
 </section>
@@ -1706,6 +1719,7 @@ PANEL_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta
 </section>
 <section class="card"><h2>Recent switches</h2><div class="timeline" id="events"></div></section>
 <p class="muted small">Cost-equivalent = API list prices (cache read 0.1&times;, write 1.25&times;); actual spend is covered by the subscriptions. <span id="ver"></span></p>
+<div id="rate-calc" popover class="pop"></div>
 </main>
 <script>
 const SKEY = 'claude-rotate-key';
@@ -1832,6 +1846,15 @@ async function refresh(){
   $('hero-sub').textContent=wk.eta?`${when(wk.eta)} · quota returns ${when(wk.back)} when ${wk.back_account} resets`:(wk.note||'no shortfall projected');
   $('k-left').textContent=last?Math.round(last[2]-last[1])+'%':'–'; $('k-left-sub').textContent=`of ${wk.capacity||0}% · ${accts.length} accounts`;
   $('k-rate').textContent=wk.rate_per_day!=null?wk.rate_per_day+'%':'–';
+  const rc=wk.rate_calc, dm=wk.demand||{};
+  $('rate-calc').innerHTML=rc?'<p><b>Burn rate working</b></p>'
+    +`<p>Window: all retained history, ${esc(Math.round(rc.history_h/24*10)/10)} days (up to ${esc(rc.history_days)} kept).</p>`
+    +`<p>Last ${esc(rc.recent_days)} days, weight 1: ${esc(rc.recent_h)} h with an account available; usage rose ${esc(rc.recent_rise)}%.</p>`
+    +`<p>Older, weight ${esc(rc.older_weight)}: ${esc(rc.older_h)} h; usage rose ${esc(rc.older_rise)}%.</p>`
+    +(wk.rate_per_day!=null?`<p>Rate = (${esc(rc.recent_rise)} + ${esc(rc.older_weight)} x ${esc(rc.older_rise)}) / (${esc(rc.recent_h)} + ${esc(rc.older_weight)} x ${esc(rc.older_h)}) h x 24 = ${esc(wk.rate_per_day)}% of a weekly quota per day (inputs rounded).</p>`
+      :`<p>${esc(wk.note)}</p><p>A rate needs ${esc(rc.min_h)} h with an account available.</p>`)
+    +'<p>Counts only time when an account was under its allowance and hard limit.</p>'
+    +(dm.week_pct!=null?`<p>Demand: 7 x ${esc(wk.rate_per_day)} = ${esc(dm.week_pct)}% a week; / 100 per weight-1 account, rounded up = ${esc(dm.accounts_needed)}.</p>`:''):'';
   $('k-req').textContent=fmt(sum(stats.by_device,b=>b.requests)); $('k-req-sub').textContent=fmt(sum(stats.by_device,tok))+' tokens';
   $('k-cost').textContent=money(sum((per['7d']||{}).model,b=>b.cost_usd)); $('k-cost-sub').textContent=money(sum(stats.by_model,b=>b.cost_usd))+' in the last 24 h';
   // accounts

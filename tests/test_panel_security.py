@@ -27,7 +27,7 @@ const value = '<mark data-audit="marker">&\'"</mark>';
 const elements = {}, urls = [], replaced = [];
 const usage = {requests:1,input_tokens:1,output_tokens:1,cache_read:0,cache_write:0,cost_usd:1};
 const stats = {devices:{[value]:{last_model:value,last_account:value,key_suffix:value}},alerts:[{level:'warn',text:value}],by_device:{[value]:usage},by_model:{[value]:usage},by_account:{[value]:usage},model_devices:{[value]:{[value]:3,[value+'-2']:1},only:{[value]:3,[value+'-2']:1}},periods:{since:value,account_since:value,'7d':{device:{[value]:usage},model:{[value]:usage},account:{[value]:usage}},'30d':{device:{[value]:usage},model:{[value]:usage},account:{[value]:usage}},all:{device:{[value]:usage,[value+'-gone']:usage},model:{[value]:usage},account:{[value]:usage}},trend:{[value]:[0,1,2]}}};
-const status = {version:{version:value,revision:'0123456789abcdef0123456789abcdef01234567'},accounts:{[value]:{priority:100,private_to:[value,value+"-2"],reset_5h:1793883600,reset_7d:1793883600,reset_5h_in_min:30,reset_7d_in_h:50}},active_account:value,strategy:value,switch_threshold:.8,switch_threshold_7d:.98,recent_events:[{ts:value,from:value,to:value,reason:value}],weekly:{series:[[0,0,100],[3600,10,100]],projection:[[3600,10,100],[7200,100,100]],rate_per_day:5,eta:7200,back:9000,back_account:value,capacity:200,demand:{week_pct:410.4,capacity_pct:400,accounts_needed:value,shortfall_pct:10.4,note:null}}};
+const status = {version:{version:value,revision:'0123456789abcdef0123456789abcdef01234567'},accounts:{[value]:{priority:100,private_to:[value,value+"-2"],reset_5h:1793883600,reset_7d:1793883600,reset_5h_in_min:30,reset_7d_in_h:50}},active_account:value,strategy:value,switch_threshold:.8,switch_threshold_7d:.98,recent_events:[{ts:value,from:value,to:value,reason:value}],weekly:{series:[[0,0,100],[3600,10,100]],projection:[[3600,10,100],[7200,100,100]],rate_per_day:5,eta:7200,back:9000,back_account:value,capacity:200,rate_calc:{recent_days:7,older_weight:value,history_days:14,min_h:1,history_h:336,recent_h:168,older_h:168,recent_rise:60,older_rise:42},demand:{week_pct:410.4,capacity_pct:400,accounts_needed:value,shortfall_pct:10.4,note:null}}};
 const makeStorage=(init)=>{const m=new Map(Object.entries(init||{}));return {m,getItem:k=>m.has(k)?m.get(k):null,setItem:(k,v)=>{m.set(k,String(v))},removeItem:k=>{m.delete(k)}}};
 const makeContext=(search,storage,code)=>{
   const els={}, calls=[], repl=[];
@@ -47,6 +47,26 @@ const context = vm.createContext({URL,URLSearchParams,location:{search:'?key=fak
   assert(elements.devices.innerHTML.includes('removed'),'removed device not listed');
   assert(elements.weekly.innerHTML.includes('At that rate a week needs 410% of one weekly quota: &lt;mark data-audit=&quot;marker&quot;&gt;&amp;&#39;&quot;&lt;/mark&gt; weight-1 accounts; you have 400%.'),'demand line missing or unescaped');
   assert(!elements.weekly.innerHTML.includes('58.5') && !elements.weekly.innerHTML.includes('per week') && elements.weekly.innerHTML.split('At the current rate').length===2,'the demand line must print no second rate');
+  const E='&lt;mark data-audit=&quot;marker&quot;&gt;&amp;&#39;&quot;&lt;/mark&gt;', rcalc=()=>elements['rate-calc'].innerHTML;
+  assert(panel.includes('popovertarget="rate-calc"') && panel.includes('id="rate-calc" popover'),'the How button or the popover is missing');
+  for(const line of ['<p><b>Burn rate working</b></p>',
+    '<p>Window: all retained history, 14 days (up to 14 kept).</p>',
+    '<p>Last 7 days, weight 1: 168 h with an account available; usage rose 60%.</p>',
+    `<p>Older, weight ${E}: 168 h; usage rose 42%.</p>`,
+    `<p>Rate = (60 + ${E} x 42) / (168 + ${E} x 168) h x 24 = 5% of a weekly quota per day (inputs rounded).</p>`,
+    '<p>Counts only time when an account was under its allowance and hard limit.</p>',
+    `<p>Demand: 7 x 5 = 410.4% a week; / 100 per weight-1 account, rounded up = ${E}.</p>`])
+    assert(rcalc().includes(line),'working line missing or unescaped: '+line);
+  assert(!rcalc().includes('<mark') && !rcalc().includes('A rate needs'),'the working holds raw markup or a note line with a rate');
+  status.weekly.demand=null;
+  await vm.runInContext('refresh()',context,{timeout:1000});
+  assert(!rcalc().includes('Demand:') && !rcalc().includes('<mark'),'a null demand must leave the Demand line out');
+  const keepRate=status.weekly.rate_per_day;
+  Object.assign(status.weekly,{rate_per_day:null,note:value});
+  await vm.runInContext('refresh()',context,{timeout:1000});
+  assert(rcalc().includes(`<p>${E}</p><p>A rate needs 1 h with an account available.</p>`) && !rcalc().includes('Rate =') && !rcalc().includes('<mark'),'the note and the minimum are missing or unescaped');
+  assert(rcalc().includes('<p>Last 7 days, weight 1:'),'the inputs stay shown with a note');
+  status.weekly.rate_per_day=keepRate; delete status.weekly.note;
   status.weekly.demand={week_pct:null,capacity_pct:null,accounts_needed:null,shortfall_pct:null,note:value};
   await vm.runInContext('refresh()',context,{timeout:1000});
   assert(elements.weekly.innerHTML.includes('<div class="sentence">&lt;mark') && !elements.weekly.innerHTML.includes('<mark'),'demand note missing or unescaped');
