@@ -381,12 +381,19 @@ out = burn_fixture(0.25, 1.0)
 check("busy last day: the burn rate is weighted to 8.1/day, not the last day's 24.0",
       out["rate_per_day"] == 8.1)
 # The working the panel shows: recent_h 168 (hours 168-335 and the last sample to now), 60
-# points; older_h 168, 42 points. rate_calc holds exactly the inputs of the reported rate.
+# points; older_h 168, 42 points. A stretch's start is the series point's ts, rounded to the
+# second, so with now's fraction under .5 the hour-168 stretch starts a hair before `recent`
+# and counts in the older tier: then 167 h / 59.75 points and 169 h / 42.25 points. Either
+# way the tiers sum to 336 h and 102 points. rate_calc holds exactly the inputs of the rate.
 rc = out["rate_calc"]
 check("rate_calc on the burn fixture: hours, rises and weights of the two tiers",
-      (rc["recent_h"], rc["older_h"], rc["recent_rise"], rc["older_rise"]) == (168.0, 168.0, 60.0, 42.0)
+      (rc["recent_h"], rc["older_h"], rc["recent_rise"], rc["older_rise"])
+      in [(168.0, 168.0, 60.0, 42.0), (167.0, 169.0, 59.7, 42.2), (167.0, 169.0, 59.8, 42.2),
+          (167.0, 169.0, 59.8, 42.3)]  # the .25 rises round either way
+      and abs(rc["recent_rise"] + rc["older_rise"] - 102.0) <= 0.1
+      and rc["recent_h"] + rc["older_h"] == 336.0 and rc["history_h"] == 336.0
       and rc["older_weight"] == 0.25 and rc["recent_days"] == 7 and rc["history_days"] == 14
-      and rc["min_h"] == 1.0 and rc["history_h"] == 336.0)
+      and rc["min_h"] == 1.0)
 check("rate_calc recomputes to the reported rate: (60 + 0.25 x 42) / (168 + 0.25 x 168) x 24",
       round((rc["recent_rise"] + rc["older_weight"] * rc["older_rise"])
             / (rc["recent_h"] + rc["older_weight"] * rc["older_h"]) * 24, 1) == out["rate_per_day"])
