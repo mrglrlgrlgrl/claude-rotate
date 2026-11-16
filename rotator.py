@@ -1707,7 +1707,7 @@ PANEL_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta
  <div id="weekly" class="muted">collecting data</div><div class="tip" id="tip"></div></section>
 <section class="card"><h2>Devices</h2><table id="devices"></table></section>
 <section class="split">
- <div class="card"><h2>By model <span class="seg" id="period"></span></h2><table id="models"></table><div id="model-pie"></div></div>
+ <div class="card"><h2>By model <span id="model-since" class="muted"></span><span class="seg" id="period"></span></h2><table id="models"></table><div id="model-pie"></div></div>
  <div class="card"><h2>By account <span id="acct-since" class="muted"></span><span class="seg" id="acct-period"></span></h2><table id="by-account"></table><div id="account-pie"></div></div>
 </section>
 <section class="card"><h2>Recent switches</h2><div class="timeline" id="events"></div></section>
@@ -1761,15 +1761,16 @@ function spark(v){if(!v||!v.length)return '';const w=96,h=24,m=Math.max(...v)||1
   return `<svg width="${w}" height="${h}"><polyline points="${v.map((x,i)=>(i/(v.length-1)*w).toFixed(1)+','+y(x)).join(' ')}" fill="none" stroke="var(--muted)" stroke-width="1.5"/><circle cx="${w}" cy="${y(v[v.length-1])}" r="3" fill="var(--s1)"/></svg>`}
 function weekly(p){
   if(!p||!p.series.length) return 'collecting data';
-  const cw=Math.max(300,$('weekly').clientWidth||1100),Hh=cw<600?220:270,L=48,R=12,T=14,B=26, now=p.series[p.series.length-1][0];
+  const wk=$('weekly'),cw=Math.max(300,wk.getBoundingClientRect?Math.floor(wk.getBoundingClientRect().width)||1100:wk.clientWidth||1100),Hh=cw<600?220:270,L=48,R=12,T=14,B=26, now=p.series[p.series.length-1][0];
   const all=p.series.concat(p.projection.slice(1)), last=p.series[p.series.length-1];
   // The plot scrolls from the first sample to the projection's end and opens centred on now.
   const half=(cw<600?3.5:7.5)*D, x0=Math.min(p.series[0][0],now-half), x1=Math.max(now+half,all[all.length-1][0]);
-  const pps=(cw-L-R)/(2*half), st=pps*D<60?2:1;
+  // With at least 40 px per day for the whole span, draw it all and skip the scrolling view.
+  const span=x1-x0, fit=(cw-L-R)/span*D>=40, pps=fit?(cw-L-R)/span:(cw-L-R)/(2*half), st=pps*D<60?2:1;
   const ymax=Math.ceil(Math.max(100,...all.map(q=>q[2]))*1.1/50)*50, gs=ymax>300?100:50;
   const X=t=>(t-x0)*pps, Y=v=>T+(1-v/ymax)*(Hh-T-B), PW=Math.ceil(X(x1)+R);
   const path=(a,i)=>a.map((q,k)=>(k?'L':'M')+X(q[0]).toFixed(1)+','+Y(q[i]).toFixed(1)).join('');
-  WK={all,now,x0,pps,start:X(now-half)};
+  WK={all,now,x0,pps,start:fit?0:X(now-half)};
   if(showTable){let h='<table><tr><th>Time</th><th>Usage</th><th>Limit</th><th>Headroom</th></tr>';
     for(const q of all.filter((q,i)=>i%48===0||i===all.length-1)) h+=`<tr><td>${esc(when(q[0]))}${q[0]>now?' (projected)':''}</td><td>${Math.round(q[1])}%</td><td>${Math.round(q[2])}%</td><td>${Math.round(q[2]-q[1])}%</td></tr>`;
     return h+'</table>'+sentence(p,now)}
@@ -1873,6 +1874,7 @@ async function refresh(){
   const accounts=PERIODS[acctPeriod]==='24h'?stats.by_account:(per[PERIODS[acctPeriod]]||{}).account;
   $('by-account').innerHTML=head.replace('{}','Account')+rows(accounts);
   $('account-pie').innerHTML=pie(byCost(accounts));
+  $('model-since').innerHTML=PERIODS[period]!=='24h'&&per.since?`since ${esc(per.since)}`:'';
   $('acct-since').innerHTML=PERIODS[acctPeriod]!=='24h'&&per.account_since?`since ${esc(per.account_since)}`:'';
   $('events').innerHTML=(st.recent_events||[]).slice().reverse().map(e=>`<div><span class="muted">${esc(String(e.ts||'').slice(5,16).replace('T',' '))}</span><span>${esc(e.from)} &rarr; ${esc(e.to)}</span><span class="badge" style="margin-left:auto">${esc(e.reason)}</span></div>`).join('')||'<span class="muted">none</span>';
   const ver=st.version||{}; $('ver').innerHTML=`claude-rotate ${esc(ver.version||'dev')}`+(ver.revision?` &middot; ${esc(String(ver.revision).slice(0,7))}`:'');

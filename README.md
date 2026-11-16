@@ -374,7 +374,8 @@ rate-limit headers:
   account was available under its allowance and `hard_limit`. Periods when
   every account was or will be at its limit are shaded. The chart opens on 7.5
   days either side of now (3.5 days on a phone) and scrolls back to the first
-  sample. Hover or tap
+  sample. On a wide panel, where all history and the projection fit at 40 px
+  or more per day, the chart shows all of it without scrolling. Hover or tap
   for values; **Table** shows the same data as a table. History is sampled
   every 30 min into `usage_history.json` next to `state.json` and kept 14 days.
   One line under the chart gives the weekly demand: the rate over the last
@@ -393,8 +394,8 @@ rate-limit headers:
   today included.
 - **By model** and **by account**, each with its own 24 h / 7 d / 30 d / all
   time selector (by account starts at 24 h; account history beyond 24 h
-  starts when the account totals were first recorded, shown as "since" in its
-  heading). At 24 h each model row also lists the devices that sent it, with
+  starts when the account totals were first recorded). Both headings show
+  "since" with the first recorded day for every period but 24 h. At 24 h each model row also lists the devices that sent it, with
   their request counts; longer periods list none, because the totals keep
   device and model separately. Each row shows requests, tokens, the share of prompt tokens served from cache, and a
   *cost-equivalent* column: what the usage would cost at API list prices (incl.

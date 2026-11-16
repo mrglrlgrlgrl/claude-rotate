@@ -50,7 +50,7 @@ const context = vm.createContext({URL,URLSearchParams,location:{search:'?key=fak
   await vm.runInContext('refresh()',context,{timeout:1000});
   assert(elements.weekly.innerHTML.includes('<div class="sentence">&lt;mark') && !elements.weekly.innerHTML.includes('<mark'),'demand note missing or unescaped');
   assert(!elements.weekly.innerHTML.includes('weight-1'),'null demand must show the note only');
-  for(const id of ['pills','accounts','weekly','alerts','devices','models','by-account','events','model-pie','account-pie','ver']){
+  for(const id of ['pills','accounts','weekly','alerts','devices','models','by-account','events','model-pie','account-pie','ver','model-since']){
     assert(!elements[id].innerHTML.includes('<mark'),id+' contains raw markup');
     assert(elements[id].innerHTML.includes('&lt;mark'),id+' lost escaped text');
   }
@@ -70,9 +70,15 @@ const context = vm.createContext({URL,URLSearchParams,location:{search:'?key=fak
   assert(elements['model-pie'].innerHTML.includes('<span>other</span>') && elements['model-pie'].innerHTML.includes('<span>m5</span>') && !elements['model-pie'].innerHTML.includes('<span>m6</span>'),'other legend entry wrong');
   elements.period.onclick({target:{dataset:{p:'24 h'}}}); await vm.runInContext('refresh()',context,{timeout:1000});
   assert.equal(slices('model-pie'),1,'the 24 h period must redraw the model pie');
+  assert.equal(elements['model-since'].innerHTML,'','24 h must show no since note on By model');
   assert(elements.models.innerHTML.includes('<span class="sub">from &lt;mark data-audit=&quot;marker&quot;&gt;&amp;&#39;&quot;&lt;/mark&gt; 3 &middot; &lt;mark')&&elements.models.innerHTML.includes('-2 1</span>'),'24 h model row must list escaped devices by count');
   elements.period.onclick({target:{dataset:{p:'7 d'}}}); await vm.runInContext('refresh()',context,{timeout:1000});
   assert.equal(slices('model-pie'),7,'the 7 d period must redraw the model pie');
+  for(const p of ['7 d','30 d','All time']){
+    elements.period.onclick({target:{dataset:{p}}}); await vm.runInContext('refresh()',context,{timeout:1000});
+    assert(elements['model-since'].innerHTML.includes('since &lt;mark') && !elements['model-since'].innerHTML.includes('<mark'),p+' must show the escaped since note on By model');
+  }
+  elements.period.onclick({target:{dataset:{p:'7 d'}}}); await vm.runInContext('refresh()',context,{timeout:1000});
   assert(!elements['acct-since'].innerHTML,'24 h must show no since note');
   const acct7=stats.periods['7d'].account, manyAcct={}; for(let i=0;i<8;i++) manyAcct['a'+i]={...usage,cost_usd:10-i};
   stats.periods['7d'].account=manyAcct;
@@ -133,6 +139,24 @@ const context = vm.createContext({URL,URLSearchParams,location:{search:'?key=fak
   await vm.runInContext('refresh()',context,{timeout:1000});
   const pos=['main-b','main-a','bench','spare','default'].map(n=>elements.accounts.innerHTML.indexOf(`<b>${n}</b>`));
   assert(pos[0]>=0 && pos.every((p,i)=>i===0||p>pos[i-1]),'cards must read main-b, main-a, bench, spare, default: '+pos);
+  // weekly chart fit: 14 days of history (every 6 h) ending at now, plus a 7.5-day projection
+  const D=86400, t0=1000000, now14=t0+14*D, keepWeekly=status.weekly, series14=[], proj14=[[now14,50,100],[now14+7.5*D,100,100]];
+  for(let t=t0;t<=now14;t+=6*3600) series14.push([t,50,100]);
+  status.weekly={...keepWeekly,series:series14,projection:proj14,eta:null,demand:null,note:null};
+  const scrollWidth=h=>Number(h.match(/<svg width="(\d+)" height="\d+"><rect/)[1]);
+  // The span is 14 + 7.5 = 21.5 days. L=48 and R=12, so the plot area is cw-60 px.
+  // cw=1094: (1094-60)/21.5 = 48.1 px per day, 40 or more, so it fits: pps=1034/21.5, and the scroll svg is
+  // ceil(1034+12) = 1046 = cw-L wide, exactly the room beside the axis svg, so nothing scrolls.
+  elements.weekly.clientWidth=1094;
+  await vm.runInContext('refresh()',context,{timeout:1000});
+  assert.equal(scrollWidth(elements.weekly.innerHTML),1046,'14 days must fit a 1094 px card with no overflow');
+  // cw=700: (700-60)/21.5 = 29.8 px per day, under 40, so the 15-day view (2 x 7.5) stays: pps=640/15=42.7,
+  // and the scroll svg is ceil(21.5*42.7+12) = 930 px, wider than cw-L = 652, so it still scrolls.
+  elements.weekly.clientWidth=700;
+  await vm.runInContext('refresh()',context,{timeout:1000});
+  assert(scrollWidth(elements.weekly.innerHTML)>652,'a narrow card must keep the scrolling chart');
+  delete elements.weekly.clientWidth; status.weekly=keepWeekly;
+  await vm.runInContext('refresh()',context,{timeout:1000});
   // reload: a fresh context, the stub carried over, no ?key= in the URL
   let reload=await boot('',context.sessionStorage);
   assert(bearers(reload).length>=2 && bearers(reload).every(b=>b==='Bearer fake-viewer-key'),'reload must send the stored key');
