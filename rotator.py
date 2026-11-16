@@ -1469,8 +1469,7 @@ def aggregate_audit() -> dict:
         bump(by_device, rec.get("device", "?"), usage, cost)
         bump(by_model, model or "?", usage, cost)
         bump(by_account, rec.get("account", "?"), usage, cost)
-        per_dev = model_devices.setdefault(model or "?", {})
-        per_dev[dev] = per_dev.get(dev, 0) + 1
+        bump(model_devices.setdefault(model or "?", {}), dev, usage, cost)
         if ts >= hour_ago:
             total = sum(usage.get(k, 0) for k in (
                 "input_tokens", "output_tokens", "cache_creation_input_tokens"))
@@ -1678,7 +1677,7 @@ PANEL_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta
  .sentence{margin-top:8px;color:var(--ink2)}
  table{border-collapse:collapse;width:100%} th,td{padding:8px 10px;border-bottom:1px solid var(--grid);text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
  th{color:var(--muted);font-weight:500;font-size:12px} td:first-child,th:first-child,.l{text-align:left} tr:last-child td{border-bottom:0}
- td .sub{display:block;color:var(--muted);font-size:11px} tr.removed td{color:var(--muted)}
+ td .sub{display:block;color:var(--muted);font-size:11px} tr.removed td{color:var(--muted)} tr.dev td{font-size:11px;color:var(--muted)} tr.dev td:first-child{padding-left:22px} tr[data-m]{cursor:pointer}
  .seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-left:auto}
  .seg button{background:none;border:0;color:var(--ink2);padding:4px 12px;font:inherit;font-size:12px;cursor:pointer} .seg button.on{background:var(--grid);color:var(--ink);font-weight:600}
  .split{display:grid;grid-template-columns:1.3fr 1fr;gap:16px}
@@ -1731,6 +1730,7 @@ cleanURL.searchParams.delete('key');
 history.replaceState(null, '', cleanURL.pathname + cleanURL.search + cleanURL.hash);
 const $=id=>document.getElementById(id), H=3600, D=86400, PERIODS={'24 h':'24h','7 d':'7d','30 d':'30d','All time':'all'};
 let period='7 d', acctPeriod='24 h', showTable=false, WK=null;
+const OPEN=new Set();  // models whose per-device rows are shown
 function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function fmt(n){n=n||0;return n>=1e6?(n/1e6).toFixed(n>=1e7?0:1)+'M':n>=1e3?(n/1e3).toFixed(n>=1e4?0:1)+'k':''+Math.round(n)}
 function money(v){v=v||0;return '$'+(v>=100?Math.round(v).toLocaleString():v.toFixed(2))}
@@ -1827,6 +1827,7 @@ $('weekly').onpointerleave=e=>{if(e.pointerType==='touch') return;  // touch fir
   $('tip').style.display='none'; const xh=document.querySelector('#xh'); if(xh) xh.setAttribute('opacity','0')};
 $('tbl').onclick=()=>{showTable=!showTable; $('tbl').textContent=showTable?'Chart':'Table'; refresh()};
 $('period').onclick=e=>{const p=e.target.dataset&&e.target.dataset.p; if(p){period=p; refresh()}};
+$('models').onclick=e=>{const r=e.target.closest&&e.target.closest('tr[data-m]'); if(r){const m=r.dataset.m; OPEN.has(m)?OPEN.delete(m):OPEN.add(m); refresh()}};
 $('acct-period').onclick=e=>{const p=e.target.dataset&&e.target.dataset.p; if(p){acctPeriod=p; refresh()}};
 const api=path=>fetch(path,{headers:KEY?{Authorization:'Bearer '+KEY}:{},cache:'no-store'});
 async function refresh(){
@@ -1881,9 +1882,11 @@ async function refresh(){
   const segs=cur=>Object.keys(PERIODS).map(p=>`<button data-p="${p}" class="${p===cur?'on':''}">${p}</button>`).join('');
   $('period').innerHTML=segs(period); $('acct-period').innerHTML=segs(acctPeriod);
   const byCost=o=>Object.entries(o||{}).sort((a,b)=>(b[1].cost_usd||0)-(a[1].cost_usd||0));
-  const from=md=>{const d=Object.entries(md||{}).sort((a,b)=>b[1]-a[1]); return d.length?`<span class="sub">from ${d.map(([n,c])=>esc(n)+' '+esc(c)).join(' &middot; ')}</span>`:''};
-  const rows=(o,devs)=>byCost(o).map(([n,b])=>{const prompt=(b.input_tokens||0)+(b.cache_read||0)+(b.cache_write||0);
-    return `<tr><td>${esc(n)}${devs?from(devs[n]):''}</td><td>${fmt(b.requests)}</td><td>${fmt(tok(b))}</td><td>${prompt?Math.round((b.cache_read||0)/prompt*100):0}%</td><td>${money(b.cost_usd)}</td></tr>`}).join('');
+  const figs=b=>{const prompt=(b.input_tokens||0)+(b.cache_read||0)+(b.cache_write||0);
+    return `<td>${fmt(b.requests)}</td><td>${fmt(tok(b))}</td><td>${prompt?Math.round((b.cache_read||0)/prompt*100):0}%</td><td>${money(b.cost_usd)}</td>`};
+  const rows=(o,devs)=>byCost(o).map(([n,b])=>{const md=devs&&devs[n]||{}, multi=Object.keys(md).length>=2, open=multi&&OPEN.has(n);
+    return `<tr${multi?` data-m="${esc(n)}"`:''}><td>${multi?(open?'&#9662; ':'&#9656; '):''}${esc(n)}</td>${figs(b)}</tr>`
+      +(open?byCost(md).map(([d,db])=>`<tr class="dev"><td>${esc(d)}</td>${figs(db)}</tr>`).join(''):'')}).join('');
   const head='<tr><th>{}</th><th>Requests</th><th>Tokens</th><th>From cache</th><th>$ equiv</th></tr>';
   const models=PERIODS[period]==='24h'?stats.by_model:(per[PERIODS[period]]||{}).model;
   $('models').innerHTML=head.replace('{}','Model')+rows(models,PERIODS[period]==='24h'?stats.model_devices||{}:null);

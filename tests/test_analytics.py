@@ -589,14 +589,23 @@ def jline(r):
 
 fresh_cache(tmp / "model_devices.jsonl")
 R.AUDIT_PATH.write_text("".join(jline(r) for r in [
-    rec(now - 60, "laptop", "claude-sonnet-5", "a"), rec(now - 50, "laptop", "claude-sonnet-5", "a"),
-    rec(now - 40, "ci-box", "claude-sonnet-5", "a"), rec(now - 30, "ci-box", "claude-haiku-4-5", "a"),
-    {**rec(now - 20, "laptop", "x", "a"), "model": ["not", "a", "string"]},
-    rec(now - 90000, "gone-box", "claude-sonnet-5", "a")]))
-md = R.aggregate_audit()["model_devices"]
-check("model_devices counts requests per model per device, within 24 h",
-      md["claude-sonnet-5"] == {"laptop": 2, "ci-box": 1} and md["claude-haiku-4-5"] == {"ci-box": 1})
-check("a non-string model folds into '?' in model_devices", md["?"] == {"laptop": 1})
+    rec(now - 60, "laptop", "claude-sonnet-5", "a", inp=10, out=1), rec(now - 50, "laptop", "claude-sonnet-5", "a", inp=20, out=2),
+    rec(now - 40, "ci-box", "claude-sonnet-5", "a", inp=5, out=3), rec(now - 30, "ci-box", "claude-haiku-4-5", "a"),
+    {**rec(now - 20, "laptop", "x", "a", inp=7), "model": ["not", "a", "string"]},
+    rec(now - 90000, "gone-box", "claude-sonnet-5", "a", inp=999)]))
+agg_md = R.aggregate_audit()
+md = agg_md["model_devices"]
+check("model_devices holds a usage bucket per model per device, within 24 h",
+      set(md["claude-sonnet-5"]) == {"laptop", "ci-box"} and set(md["claude-haiku-4-5"]) == {"ci-box"}
+      and md["claude-sonnet-5"]["laptop"]["requests"] == 2 and md["claude-sonnet-5"]["ci-box"]["requests"] == 1
+      and md["claude-sonnet-5"]["laptop"]["input_tokens"] == 30 and md["claude-sonnet-5"]["laptop"]["output_tokens"] == 3
+      and md["claude-sonnet-5"]["ci-box"]["input_tokens"] == 5 and md["claude-sonnet-5"]["ci-box"]["output_tokens"] == 3
+      and md["claude-sonnet-5"]["laptop"]["cost_usd"] > md["claude-sonnet-5"]["ci-box"]["cost_usd"] > 0
+      and md["claude-haiku-4-5"]["ci-box"]["requests"] == 1)
+check("model_devices buckets add up to the by_model bucket",
+      sum(b["requests"] for b in md["claude-sonnet-5"].values()) == agg_md["by_model"]["claude-sonnet-5"]["requests"])
+check("a non-string model folds into '?' in model_devices",
+      set(md["?"]) == {"laptop"} and md["?"]["laptop"]["requests"] == 1 and md["?"]["laptop"]["input_tokens"] == 7)
 
 fresh_cache(tmp / "ageing.jsonl")
 t_old, t_new = now - 3600, now + 25 * 3600 - 600

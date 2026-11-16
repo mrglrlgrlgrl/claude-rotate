@@ -399,9 +399,11 @@ rate-limit headers:
 - **By model** and **by account**, each with its own 24 h / 7 d / 30 d / all
   time selector (by account starts at 24 h; account history beyond 24 h
   starts when the account totals were first recorded). Both headings show
-  "since" with the first recorded day for every period but 24 h. At 24 h each model row also lists the devices that sent it, with
-  their request counts; longer periods list none, because the totals keep
-  device and model separately. Each row shows requests, tokens, the share of prompt tokens served from cache, and a
+  "since" with the first recorded day for every period but 24 h. At 24 h a model sent by two or more devices carries a
+  triangle and can be clicked to show one row per device, each with its own
+  requests, tokens, cache share and cost; a model from one device has none.
+  Longer periods show no device rows, because the totals keep device and
+  model separately. Each row shows requests, tokens, the share of prompt tokens served from cache, and a
   *cost-equivalent* column: what the usage would cost at API list prices (incl.
   cache read 0.1× / write 1.25×), i.e. what the subscriptions are saving you.
   Under each table a pie chart shows each row's share of that
@@ -424,7 +426,7 @@ minute. On first start it is rebuilt once from `audit.jsonl` and its rotated
 copies, so all time reaches back as far as those logs do.
 
 JSON endpoints: `/rotate/status` (accounts, each with its `private_to` owners as a list or null, its `weekly_cap`, `weekly_pacing` and `weekly_allowance` (the weekly use allowed now, or null with neither setting), + switch events, + `weekly.rate_calc`, the working of `weekly.rate_per_day` (`recent_days`, `older_weight`, `history_days`, `min_h`, and the `history_h`, `recent_h`, `older_h`, `recent_rise` and `older_rise` it counted; present with a `note` too), + `weekly.demand`, the weekly demand figures (`week_pct`, 7 x `weekly.rate_per_day`, with `capacity_pct`, `accounts_needed`, `shortfall_pct` and a `note` while there is no rate), + `version`, the running `version` and `revision`) and
-`/rotate/stats` (rollups, alerts, `model_devices`, the 24 h request count per model per device, and the longer `periods`), same `?key=` or `Authorization: Bearer`
+`/rotate/stats` (rollups, alerts, `model_devices`, the 24 h usage per model per device (`model_devices[model][device]` holds the same `requests`, token and `cost_usd` fields as a `by_model` row), and the longer `periods`), same `?key=` or `Authorization: Bearer`
 auth. Audit trail: `logs/audit.jsonl`, one JSON record per request, with a
 `session` field holding the client's own session id (Claude Code's
 `X-Claude-Code-Session-Id`, else the `session_id` inside `metadata.user_id`; cut
