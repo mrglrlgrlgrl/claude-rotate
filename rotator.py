@@ -1787,10 +1787,10 @@ function pie(rows){
   return `<div class="pie"><svg width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="share of cost-equivalent">${slices}</svg><ul>`
     +parts.map(p=>`<li><i style="background:${p.c}"></i><span>${esc(p.n)}</span><b>${Math.round(p.v/total*100)}%</b></li>`).join('')+'</ul></div>';
 }
-function meter(label,u,thr,reset,ts,a){
+function meter(label,u,thr,reset,ts,a,rs){
   const lim=a&&a.weekly_allowance!=null, paced=lim&&a.weekly_pacing, al=lim?a.weekly_allowance:0, cap=lim&&a.weekly_cap!=null?a.weekly_cap:1;
   const hit=lim&&u>=al, pc=x=>+(x*100).toFixed(2), rd=x=>Math.round(x*100), pacedTxt='paced allowance '+rd(al)+'% of '+rd(cap)+'% limit';
-  const sev=u>=1?['var(--crit)',' &#10005; limit reached']:hit?['var(--warn)',paced?' &#9888; paced allowance reached':' &#9888; weekly cap reached']:u>=thr?['var(--warn)',' &#9888; past switch point']:['var(--s1)',''];
+  const sev=u>=1?['var(--crit)',' &#10005; limit reached']:hit?['var(--warn)',paced?' &#9888; paced allowance reached':' &#9888; weekly cap reached']:u>=thr?['var(--warn)',rs?' &#9888; spending reserve before reset':' &#9888; past switch point']:['var(--s1)',''];
   const hatch=lim&&cap<1?`<span class="hatch" style="left:${pc(cap)}%"></span>`:'';
   const capLine=lim&&cap<1?`<span class="cap" style="left:${pc(cap)}%" title="weekly cap ${rd(cap)}%: the hatched part is not available"></span>`:'';
   const pace=paced?`<span class="pace${al*100<8?' lo':al*100>92?' hi':''}" style="left:${pc(al)}%" title="${pacedTxt}"><b>${rd(al)}%</b></span>`:'';
@@ -1896,8 +1896,8 @@ async function refresh(){
     return `<div class="card"><div class="acct-head"><b>${esc(name)}</b>${name===st.active_account?'<span class="badge"><span class="dot" style="background:var(--good)"></span>active</span>':''}`
       +(a.disabled?'<span class="badge">disabled</span>':'')+(a.private_to?`<span class="badge">private to ${esc([].concat(a.private_to).join(', '))}</span>`:'')+(a.priority!==100?`<span class="badge">prio ${esc(a.priority)}</span>`:'')
       +`<span class="muted small" style="margin-left:auto">upstream: ${esc(a.status||'n/a')} &middot; seen ${seen}</span></div>`
-      +meter('5h',u5,st.switch_threshold,a.reset_5h_in_min>0?'resets in '+dur(a.reset_5h_in_min*60):'window idle',a.reset_5h_in_min>0&&a.reset_5h)
-      +meter('7d',u7,st.switch_threshold_7d,a.reset_7d_in_h>0?'resets in '+dur(a.reset_7d_in_h*H):'window idle',a.reset_7d_in_h>0&&a.reset_7d,a)+'</div>'}).join('');
+      +meter('5h',u5,st.switch_threshold,a.reset_5h_in_min>0?'resets in '+dur(a.reset_5h_in_min*60):'window idle',a.reset_5h_in_min>0&&a.reset_5h,null,a.reserve_spendable)
+      +meter('7d',u7,st.switch_threshold_7d,a.reset_7d_in_h>0?'resets in '+dur(a.reset_7d_in_h*H):'window idle',a.reset_7d_in_h>0&&a.reset_7d,a,a.reserve_spendable)+'</div>'}).join('');
   const sc=$('wk-scroll'), keep=sc&&sc.scrollWidth?sc.scrollWidth-sc.clientWidth-sc.scrollLeft:null;  // keep the view across redraws
   $('weekly').innerHTML=weekly(wk);
   const nsc=$('wk-scroll'); if(nsc&&WK) nsc.scrollLeft=keep==null?WK.start:nsc.scrollWidth-nsc.clientWidth-keep;

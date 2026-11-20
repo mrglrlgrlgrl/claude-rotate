@@ -173,6 +173,15 @@ const context = vm.createContext({URL,URLSearchParams,location:{search:'?key=fak
   assert(html.includes('weekly cap reached'),'flat reached missing');
   html=await acct({weekly_cap:.5,weekly_pacing:false,weekly_allowance:.5,effective_util_7d:1});
   assert(html.includes('limit reached') && !html.includes('weekly cap reached'),'full use must say limit reached');
+  // 5h meter over the 0.8 switch point: reserve about to expire says so, otherwise "past switch point"
+  html=await acct({effective_util_5h:.96,reserve_spendable:true});
+  assert(html.includes('spending reserve before reset') && !html.includes('past switch point'),'reserve_spendable 5h label missing');
+  html=await acct({effective_util_5h:.96,reserve_spendable:false});
+  assert(html.includes('past switch point') && !html.includes('spending reserve'),'non-reserve 5h label wrong');
+  html=await acct({effective_util_5h:.5,reserve_spendable:true});
+  assert(!html.includes('past switch point') && !html.includes('spending reserve'),'under the threshold must show no label');
+  html=await acct({effective_util_5h:1,reserve_spendable:true});
+  assert(html.includes('limit reached') && !html.includes('spending reserve'),'limit reached must win over the reserve label');
   html=await acct({weekly_cap:0,weekly_pacing:false,weekly_allowance:0,effective_util_7d:0});
   assert(html.includes('<span class="hatch" style="left:0%"></span>'),'zero cap must hatch everything');
   html=await acct({weekly_cap:null,weekly_pacing:false,weekly_allowance:null,effective_util_7d:.2});

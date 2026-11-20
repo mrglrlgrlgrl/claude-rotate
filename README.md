@@ -364,7 +364,10 @@ rate-limit headers:
   allowance now, which moves along the bar through the week and carries a
   small tag with the allowance percentage. Hover the line or the marker for
   its full value. Once weekly use is at or over the allowance, the meter says
-  `weekly cap reached` or `paced allowance reached`.
+  `weekly cap reached` or `paced allowance reached`. A meter over its switch
+  threshold says `past switch point`. When the account is held in reserve and
+  is being spent on purpose before its window resets (`reserve_spendable` in
+  `/rotate/status`), it says `spending reserve before reset` instead.
 - **Weekly quota, all accounts**: the enabled accounts' current weekly
   usage, summed (blue), against their combined capacity (orange: 100% per
   account, scaled by `accounts[].weight`). Usage drops at each account's weekly
@@ -578,6 +581,12 @@ weekly window under `switch_threshold_7d`; a window past its reset counts as
   soonest. A week-exhausted account counts from its weekly reset (a 5h reset
   can't help it), and an account whose last response was a quota rejection
   isn't usable until a window has reset since.
+- **Reserve spend**, for every strategy: an account over a switch threshold
+  stays in use while each window holding it there resets within
+  `reserve_spend_5h_s` or `reserve_spend_7d_s` (defaults 3600 and 43200
+  seconds). Its reserve would expire unused, so the proxy spends it and does
+  not switch away at the threshold. A value of `0` turns that window's part
+  off, because a future reset is never within 0 seconds.
 - A cooldown plus a hysteresis margin stop accounts ping-ponging at the
   threshold; a hard limit (quota actually rejected) always switches
   immediately.

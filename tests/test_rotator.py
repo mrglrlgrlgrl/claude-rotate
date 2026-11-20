@@ -1058,4 +1058,55 @@ check("N <= L: cap_relief_ts equals the value without final_window",
 
 R.THRESHOLD_7D, R.PACE_LOOKAHEAD_S = saved_th7, saved_look
 
+# 18. a deployment report: consume-first, chris2 at 96% 5h with its window
+# resetting in 13 min stays active past switch_threshold (reserve spend, as designed)
+saved_cfg = (R.ACCOUNTS, R.THRESHOLD, R.THRESHOLD_7D, R.STRATEGY, R.COOLDOWN_S, R.SWITCH_MARGIN, R.CF_MARGIN_S,
+             R.RESERVE_SPEND_5H_S, R.RESERVE_SPEND_7D_S)
+R.ACCOUNTS = {"chris1": {"name": "chris1"}, "chris2": {"name": "chris2"}}
+R.THRESHOLD, R.THRESHOLD_7D, R.STRATEGY, R.COOLDOWN_S, R.SWITCH_MARGIN, R.CF_MARGIN_S = 0.8, 0.98, "consume-first", 300, 0.05, 3600
+R.RESERVE_SPEND_5H_S, R.RESERVE_SPEND_7D_S = 3600, 43200
+
+def chris(active, u5_c2, r5_c2_min, u5_c1=0.16, r5_c1_min=3):
+    t = time.time()
+    fresh_state(active)
+    R.STATE["accounts"] = {
+        "chris1": {"util_5h": u5_c1, "util_7d": 0.03, "reset_5h": t + r5_c1_min * 60,
+                   "reset_7d": t + 3.7 * 86400, "last_seen": t - 780},
+        "chris2": {"util_5h": u5_c2, "util_7d": 0.70, "reset_5h": t + r5_c2_min * 60,
+                   "reset_7d": t + 86400, "last_seen": t},
+    }
+    return t
+
+# A. the reported state
+t = chris("chris2", 0.96, 13)
+check("A: chris2 at 96% with its 5h reset in 13 min is reserve_spendable", R.reserve_spendable("chris2"))
+check("A: ...and so usable and picked", R.usable("chris2") and R.pick_account() == "chris2")
+v = run(R.note_response("chris2", headers(u5=0.96, u7=0.70, r5=int(t + 13 * 60), r7=int(t + 86400),
+                                         status="allowed_warning"), 200))
+check("A: no switch, active stays chris2", v is None and R.STATE["active_account"] == "chris2")
+# B. crossing 0.8 with the reset 90 min away is not reserve: switch
+t = chris("chris2", 0.79, 90)
+v = run(R.note_response("chris2", headers(u5=0.81, u7=0.70, r5=int(t + 90 * 60), r7=int(t + 86400)), 200))
+check("B: 0.81 with the reset in 90 min is not reserve_spendable", not R.reserve_spendable("chris2"))
+check("B: switches to chris1 on utilization>=0.8",
+      v == "switched" and R.STATE["active_account"] == "chris1"
+      and R.STATE["events"][-1]["reason"] == "utilization>=0.8")
+# C. crossing 0.8 with the reset 50 min away is reserve: stay
+t = chris("chris2", 0.79, 50)
+v = run(R.note_response("chris2", headers(u5=0.81, u7=0.70, r5=int(t + 50 * 60), r7=int(t + 86400)), 200))
+check("C: 0.81 with the reset in 50 min is reserve_spendable and stays on chris2",
+      R.reserve_spendable("chris2") and v is None and R.STATE["active_account"] == "chris2")
+# D. on chris1, chris2's expiring reserve pulls traffic back
+t = chris("chris1", 0.85, 50)
+v = run(R.note_response("chris1", headers(u5=0.16, u7=0.03, r5=int(t + 3 * 60), r7=int(t + 3.7 * 86400)), 200))
+check("D: switches back to chris2 on reserve_expiring",
+      v == "switched" and R.STATE["active_account"] == "chris2"
+      and R.STATE["events"][-1]["reason"] == "reserve_expiring")
+# RESERVE_SPEND_5H_S 0 turns the 5h hold off: a future reset is never within 0 s
+R.RESERVE_SPEND_5H_S = 0
+chris("chris2", 0.96, 13)
+check("0 s horizon: the 13 min reserve is not spendable", not R.reserve_spendable("chris2"))
+(R.ACCOUNTS, R.THRESHOLD, R.THRESHOLD_7D, R.STRATEGY, R.COOLDOWN_S, R.SWITCH_MARGIN, R.CF_MARGIN_S,
+ R.RESERVE_SPEND_5H_S, R.RESERVE_SPEND_7D_S) = saved_cfg
+
 print(f"\nall {PASS} checks passed")
