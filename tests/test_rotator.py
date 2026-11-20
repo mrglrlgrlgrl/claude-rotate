@@ -887,4 +887,175 @@ check("batches 404: no rotation, nothing marked",
 check("query string still counts as /v1/messages",
       R.method_is_messages("/v1/messages?beta=true"))
 
+# 17. accounts[].final_window: paced up to max(lookahead, window), ranked first
+# in the window, weekly threshold given way to the hard limit
+D_ = 86400
+saved_th7, saved_look = R.THRESHOLD_7D, R.PACE_LOOKAHEAD_S
+R.THRESHOLD_7D, R.PACE_LOOKAHEAD_S = 0.98, 12 * H_
+T = time.time()
+
+R.ACCOUNTS = {"a": {"name": "a", "weekly_cap": 0.5, "weekly_pacing": True,
+                    "final_window": "0m"}}
+check("final_window 0m: pace_lookahead_s is the top-level value",
+      R.pace_lookahead_s("a") == 12 * H_)
+R.ACCOUNTS["a"]["pace_lookahead"] = "2d"
+check("final_window 0m: pace_lookahead_s is the account's own value",
+      R.pace_lookahead_s("a") == 2 * D_)
+fresh_state("a")
+R.STATE["accounts"] = {"a": {"reset_7d": time.time() + H_}}
+check("final_window 0m: in_final_window is false at reset - 1h",
+      not R.in_final_window("a") and not R.in_final_window("a", T + H_, T))
+
+R.ACCOUNTS = {"a": {"name": "a", "weekly_cap": 0.5, "weekly_pacing": True,
+                    "final_window": "12h", "pace_lookahead": "0m"}}
+check("N > L: the effective lookahead is the window",
+      R.pace_lookahead_s("a") == 12 * H_)
+check("N > L: a newly reset account is paced as if 12h old",
+      abs(R.cap_allowance("a", T + 168 * H_, T) - 0.5 * 12 / 168) < 1e-9)
+check("N > L: 13h before the reset the allowance is 167/168 of the cap",
+      abs(R.cap_allowance("a", T + 13 * H_, T) - 0.5 * 167 / 168) < 1e-9)
+check("N > L: the full cap is reached as the window opens",
+      R.cap_allowance("a", T + 12 * H_, T) == 0.5)
+R.ACCOUNTS = {"a": {"name": "a", "weekly_cap": 0.5, "weekly_pacing": True,
+                    "final_window": "6h"}}
+check("N <= L: the top-level lookahead stays",
+      R.pace_lookahead_s("a") == 12 * H_
+      and abs(R.cap_allowance("a", T + 6 * D_, T) - 0.5 * 36 / 168) < 1e-9)
+del R.ACCOUNTS["a"]["final_window"]
+plain = R.cap_allowance("a", T + 6 * D_, T)
+R.ACCOUNTS["a"]["final_window"] = "6h"
+check("N <= L: the allowance equals the one without final_window",
+      R.cap_allowance("a", T + 6 * D_, T) == plain)
+check("N <= L: the full cap is reached at reset - 12h",
+      R.cap_allowance("a", T + 12 * H_, T) == 0.5)
+check("N <= L: not in the window at reset - 7h, in it at reset - 5h",
+      not R.in_final_window("a", T + 7 * H_, T) and R.in_final_window("a", T + 5 * H_, T))
+fresh_state("a")
+R.STATE["accounts"] = {"a": {}}
+check("in_final_window: false once the reset has passed or when it is unknown",
+      not R.in_final_window("a", T - 10, T) and not R.in_final_window("a", None, T))
+R.ACCOUNTS = {"a": {"name": "a", "weekly_cap": 0.5, "weekly_pacing": True,
+                    "final_window": "2d", "pace_lookahead": "1d"}}
+check("N > L with an own L: the effective lookahead is 2d", R.pace_lookahead_s("a") == 2 * D_)
+
+# 17b. the 7d threshold gives way to hard_limit in the window; the 5h one stays
+R.THRESHOLD_7D = 0.5
+R.ACCOUNTS = {"a": {"name": "a", "weekly_pacing": True, "final_window": "12h"}}
+fresh_state("a")
+R.STATE["accounts"] = {"a": {"util_5h": 0.1, "util_7d": 0.6, "reset_7d": time.time() + 13 * H_}}
+check("outside the window util_7d 0.6 is over the 7d threshold",
+      R.cap_ok("a") and not R.under_threshold("a"))
+R.STATE["accounts"]["a"]["reset_7d"] = time.time() + 11 * H_
+check("in the window util_7d 0.6 is under the hard limit: under_threshold and usable",
+      R.under_threshold("a") and R.usable("a"))
+R.STATE["accounts"]["a"]["util_5h"] = 0.85
+check("in the window the 5h threshold still applies", not R.under_threshold("a"))
+R.STATE["accounts"]["a"].update(util_5h=0.1, util_7d=1.0)
+check("in the window util_7d 1.0 is not hard_ok", not R.hard_ok("a"))
+R.THRESHOLD_7D = 0.98
+
+# 17c. the 7d leg of reserve_spendable follows the hard limit in the window
+R.ACCOUNTS = {"a": {"name": "a", "weekly_pacing": True, "final_window": "1d"}}
+fresh_state("a")
+R.STATE["accounts"] = {"a": {"util_5h": 0.9, "reset_5h": time.time() + 1800,
+                             "util_7d": 0.99, "reset_7d": time.time() + 20 * H_}}
+check("in the window only the 5h leg decides reserve_spendable",
+      R.reserve_spendable("a") and R.usable("a"))
+R.STATE["accounts"]["a"]["util_7d"] = 1.0
+check("in the window at util_7d 1.0 it is not reserve_spendable", not R.reserve_spendable("a"))
+R.STATE["accounts"]["a"]["util_7d"] = 0.99
+del R.ACCOUNTS["a"]["final_window"]
+check("without final_window the 7d leg refuses 20h from the reset",
+      not R.reserve_spendable("a"))
+
+# 17d. ranking: priority 2 in its window outranks two priority 1 accounts
+def fw_pool(a_reset, window="6h"):
+    R.ACCOUNTS = {"a": {"name": "a", "priority": 2, "weekly_pacing": True},
+                  "b": {"name": "b", "priority": 1}, "c": {"name": "c", "priority": 1}}
+    if window:
+        R.ACCOUNTS["a"]["final_window"] = window
+    fresh_state("b")
+    t = time.time()
+    R.STATE["accounts"] = {
+        "a": {"util_5h": 0.1, "util_7d": 0.1, "reset_7d": t + a_reset},
+        "b": {"util_5h": 0.1, "util_7d": 0.1, "reset_7d": t + 3 * D_},
+        "c": {"util_5h": 0.1, "util_7d": 0.1, "reset_7d": t + 3 * D_},
+    }
+fw_pool(8 * H_)
+check("reset in 8h, outside the window: a priority 1 account is picked",
+      R.pick_account() in ("b", "c") and R.cap_allowance("a") == 1.0)
+fw_pool(5 * H_)
+check("reset in 5h, in the window: the priority 2 account is picked",
+      R.pick_account() == "a" and R.rank("a", None)[0] == 0 and R.priority("a") == 2)
+fw_pool(5 * H_, window=None)
+check("no final_window: the priority 1 tier still wins", R.pick_account() in ("b", "c"))
+
+# 17e. in the window the elevated account is still skipped when it cannot serve
+def blocked(mutate):
+    fw_pool(5 * H_)
+    mutate()
+    return R.in_final_window("a") and R.pick_account() in ("b", "c")
+check("in the window, over the 5h switch_threshold: not picked",
+      blocked(lambda: R.STATE["accounts"]["a"].update(util_5h=0.9)))
+check("in the window, disabled: not picked",
+      blocked(lambda: R.ACCOUNTS["a"].update(disabled=True)))
+check("in the window, bad: not picked",
+      blocked(lambda: R.STATE["accounts"]["a"].update(
+          bad_status=403, last_bad_seen=time.time(), bad_count=1)))
+check("in the window, rejected: not picked",
+      blocked(lambda: R.STATE["accounts"]["a"].update(
+          status="rejected", last_seen=time.time() - 10, util_5h=1.0,
+          reset_5h=time.time() + 3600)))
+def at_cap():
+    R.ACCOUNTS["a"]["weekly_cap"] = 0.5
+    R.STATE["accounts"]["a"]["util_7d"] = 0.5
+check("in the window, at its flat weekly_cap: not picked", blocked(at_cap))
+
+# 17f. note_response switches to the account in its window and logs final_window
+def fw_active(a_reset=5 * H_):
+    fw_pool(a_reset)
+    R.STATE["active_account"] = "b"
+fw_active()
+v = run(R.note_response("b", headers(u5=0.1, u7=0.1), 200))
+check("after the cooldown the account in its window takes over, reason final_window",
+      v == "switched" and R.STATE["active_account"] == "a"
+      and R.STATE["events"][-1]["reason"] == "final_window")
+fw_active()
+R.STATE["last_switch_ts"] = time.time()
+v = run(R.note_response("b", headers(u5=0.1, u7=0.1), 200))
+check("inside the cooldown it does not switch", v is None and R.STATE["active_account"] == "b")
+fw_active()
+del R.STATE["accounts"]["a"]["reset_7d"]
+check("an unknown reset_7d is not in the window", not R.in_final_window("a"))
+v = run(R.note_response("b", headers(u5=0.1, u7=0.1), 200))
+check("an unknown reset_7d causes no switch onto the priority 2 account",
+      v is None and R.STATE["active_account"] == "b")
+fw_pool(5 * H_)
+R.STATE["active_account"] = "a"
+R.STATE["accounts"]["a"]["reset_7d"] = time.time() - 10
+check("after the reset the window is over", not R.in_final_window("a") and R.priority("a") == 2)
+v = run(R.note_response("a", headers(u5=0.1, u7=0.1), 200))
+check("after the reset traffic returns through priority_recovery",
+      v == "switched" and R.STATE["active_account"] in ("b", "c")
+      and R.STATE["events"][-1]["reason"] == "priority_recovery")
+
+# 17g. cap_relief_ts follows the effective lookahead
+def relief(extra):
+    R.ACCOUNTS = {"a": dict({"name": "a", "weekly_cap": 0.5, "weekly_pacing": True}, **extra)}
+    fresh_state("a")
+    R.STATE["accounts"] = {"a": {"util_5h": 0.1, "util_7d": 0.4, "reset_7d": reset_7d}}
+reset_7d = time.time() + 6 * D_
+relief({"final_window": "12h", "pace_lookahead": "0m"})
+check("cap-blocked here: util 0.4 is over the allowance and under the cap",
+      not R.cap_ok("a") and 0.4 < 0.5)
+check("N > L: cap_relief_ts uses the 12h effective lookahead",
+      abs(R.cap_relief_ts("a") - (reset_7d - 604800 - 43200 + 0.4 * 604800 / 0.5)) < 1e-6)
+relief({"final_window": "6h"})
+with_fw = R.cap_relief_ts("a")
+relief({})
+check("N <= L: cap_relief_ts equals the value without final_window",
+      with_fw == R.cap_relief_ts("a") and with_fw > time.time())
+
+R.THRESHOLD_7D, R.PACE_LOOKAHEAD_S = saved_th7, saved_look
+
 print(f"\nall {PASS} checks passed")

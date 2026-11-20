@@ -145,6 +145,12 @@ def load_config() -> tuple[dict, tuple]:
         if "pace_lookahead" in acct and duration_s(acct["pace_lookahead"]) is None:
             raise ConfigError(f"account '{acct['name']}': pace_lookahead must be an integer and "
                              "one unit m, h or d, for example \"12h\"")
+        fw = duration_s(acct.get("final_window")) if "final_window" in acct else 0
+        if fw is None:
+            raise ConfigError(f"account '{acct['name']}': final_window must be an integer and "
+                             "one unit m, h or d, for example \"12h\"")
+        if fw and acct.get("weekly_pacing") is not True:
+            raise ConfigError(f"account '{acct['name']}': final_window needs weekly_pacing: true")
         path = token_path(acct)
         files.append((path, file_stamp(path)))
         if path.exists():
@@ -483,7 +489,30 @@ def pace_lookahead_s(name: str) -> float:
     """Pacing lookahead in seconds: the account's pace_lookahead, where "0m"
     means none, else the top-level one when the account sets none."""
     own = duration_s(ACCOUNTS[name].get("pace_lookahead"))
-    return PACE_LOOKAHEAD_S if own is None else own
+    return max(PACE_LOOKAHEAD_S if own is None else own, final_window_s(name))
+
+
+def final_window_s(name: str) -> int:
+    """The account's final_window in seconds; 0 when absent or "0m" (off)."""
+    return duration_s(ACCOUNTS[name].get("final_window")) or 0
+
+
+def in_final_window(name: str, reset: float | None = None, now: float | None = None) -> bool:
+    """Within final_window of the weekly reset. Uses final_window only, never the
+    lookahead. An unknown or passed reset is not in the window. `reset` and `now`
+    default to the account's state reset and the clock."""
+    window = final_window_s(name)
+    if reset is None:
+        reset = STATE["accounts"].get(name, {}).get("reset_7d")
+    if now is None:
+        now = time.time()
+    return bool(window and reset and now < reset and now >= reset - window)
+
+
+def threshold_7d(name: str) -> float:
+    """Weekly threshold for normal traffic: switch_threshold_7d, or the hard
+    limit while the account is in its final window."""
+    return HARD_LIMIT if in_final_window(name) else THRESHOLD_7D
 
 
 def cap_allowance(name: str, reset: float | None = None, now: float | None = None) -> float:
@@ -550,7 +579,7 @@ def on_probation(name: str) -> bool:
 def under_threshold(name: str) -> bool:
     return (not disabled(name) and not account_bad(name) and not rejected(name)
             and cap_ok(name)
-            and utilization(name) < THRESHOLD and util_7d(name) < THRESHOLD_7D)
+            and utilization(name) < THRESHOLD and util_7d(name) < threshold_7d(name))
 
 
 def rejected(name: str) -> bool:
@@ -604,7 +633,7 @@ def reserve_spendable(name: str) -> bool:
     info, now = STATE["accounts"].get(name, {}), time.time()
     for util, thr, key, horizon in (
             (utilization(name), THRESHOLD, "reset_5h", RESERVE_SPEND_5H_S),
-            (util_7d(name), THRESHOLD_7D, "reset_7d", RESERVE_SPEND_7D_S)):
+            (util_7d(name), threshold_7d(name), "reset_7d", RESERVE_SPEND_7D_S)):
         if util >= thr and not (info.get(key) and info[key] - now <= horizon):
             return False
     return True
@@ -619,8 +648,9 @@ def usable(name: str) -> bool:
 def rank(name: str, device: str | None) -> tuple[int, int]:
     """Sort key for preference: `priority` tiers come first, and within a tier the
     accounts reserved for this device come before the rest. With no device, only
-    priority counts."""
-    return (priority(name), 0 if device and device in owners(name) else 1)
+    priority counts. An account in its final window ranks as priority 0, ahead of
+    every tier."""
+    return (0 if in_final_window(name) else priority(name), 0 if device and device in owners(name) else 1)
 
 
 def owners(name: str) -> list[str]:
@@ -896,7 +926,7 @@ async def note_response(account: str, headers: httpx.Headers, status: int,
                     # outright; it gets re-probed only when traffic is forced.
                     if rank(nxt, device) < rank(account, device):
                         # A preferred account has room again: pull traffic back.
-                        reason = "priority_recovery"
+                        reason = "final_window" if in_final_window(nxt) else "priority_recovery"
                     elif reserve_spendable(nxt) and not reserve_spendable(account):
                         # Another account's last few % reset soon: spend them
                         # before they are lost; come back when it is rejected.
@@ -1214,6 +1244,8 @@ async def rotate_status(request: Request):
         info["effective_util_5h"] = utilization(name)
         info["effective_util_7d"] = util_7d(name)
         info["priority"] = priority(name)
+        info["final_window"] = ACCOUNTS[name].get("final_window")
+        info["in_final_window"] = in_final_window(name)
         info["disabled"] = disabled(name)
         info["private_to"] = owners(name) or None
         info["weekly_cap"] = ACCOUNTS[name].get("weekly_cap")

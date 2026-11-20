@@ -462,6 +462,15 @@ R.HISTORY = []
 check("/rotate/status: no rate gives the demand note",
       asyncio.run(R.rotate_status(type("Req", (), {"headers": {"tailscale-user-login": "x"}})()))
       ["weekly"]["demand"]["week_pct"] is None)
+R.ACCOUNTS = {"a": {"name": "a", "priority": 2, "weekly_pacing": True, "final_window": "12h"},
+              "b": {"name": "b"}}
+R.STATE = {"active_account": "b", "events": [], "accounts": {
+    "a": {"util_7d": 0.1, "reset_7d": time.time() + 5 * 3600}, "b": {"util_7d": 0.1}}}
+accts = asyncio.run(R.rotate_status(type("Req", (), {"headers": {"tailscale-user-login": "x"}})()))["accounts"]
+check("/rotate/status: final_window and in_final_window per account, priority unchanged",
+      accts["a"]["final_window"] == "12h" and accts["a"]["in_final_window"] is True
+      and accts["a"]["priority"] == 2
+      and accts["b"]["final_window"] is None and accts["b"]["in_final_window"] is False)
 R.PANEL_TAILNET = False
 R.ACCOUNTS = {"a": {"name": "a"}}
 check("cap_allowance with no extra arguments is unchanged",

@@ -425,7 +425,7 @@ The 24 h figures come from the audit log. Longer periods come from
 minute. On first start it is rebuilt once from `audit.jsonl` and its rotated
 copies, so all time reaches back as far as those logs do.
 
-JSON endpoints: `/rotate/status` (accounts, each with its `private_to` owners as a list or null, its `weekly_cap`, `weekly_pacing` and `weekly_allowance` (the weekly use allowed now, or null with neither setting), + switch events, + `weekly.rate_calc`, the working of `weekly.rate_per_day` (`recent_days`, `older_weight`, `history_days`, `min_h`, and the `history_h`, `recent_h`, `older_h`, `recent_rise` and `older_rise` it counted; present with a `note` too), + `weekly.demand`, the weekly demand figures (`week_pct`, 7 x `weekly.rate_per_day`, with `capacity_pct`, `accounts_needed`, `shortfall_pct` and a `note` while there is no rate), + `version`, the running `version` and `revision`) and
+JSON endpoints: `/rotate/status` (accounts, each with its `private_to` owners as a list or null, its `weekly_cap`, `weekly_pacing` and `weekly_allowance` (the weekly use allowed now, or null with neither setting), its `final_window` (the configured string or null) and `in_final_window` (true inside the window), + switch events, + `weekly.rate_calc`, the working of `weekly.rate_per_day` (`recent_days`, `older_weight`, `history_days`, `min_h`, and the `history_h`, `recent_h`, `older_h`, `recent_rise` and `older_rise` it counted; present with a `note` too), + `weekly.demand`, the weekly demand figures (`week_pct`, 7 x `weekly.rate_per_day`, with `capacity_pct`, `accounts_needed`, `shortfall_pct` and a `note` while there is no rate), + `version`, the running `version` and `revision`) and
 `/rotate/stats` (rollups, alerts, `model_devices`, the 24 h usage per model per device (`model_devices[model][device]` holds the same `requests`, token and `cost_usd` fields as a `by_model` row), and the longer `periods`), same `?key=` or `Authorization: Bearer`
 auth. Audit trail: `logs/audit.jsonl`, one JSON record per request, with a
 `session` field holding the client's own session id (Claude Code's
@@ -468,6 +468,7 @@ and `[DONE]`, not as a normal finish.
 | `accounts[].weekly_pacing` | `true` or `false` (default `false`): ramp this account's weekly allowance up through the week, to `weekly_cap` or to the full week when no cap is set, so the account is not drained early. See "Rotation policy". |
 | `pace_lookahead` | how long before an account's weekly reset the paced allowance opens to the full cap: an integer and one unit `m`, `h` or `d`, for example `"12h"` (default `"12h"`). Applies only to accounts with `weekly_pacing: true`. |
 | `accounts[].pace_lookahead` | overrides `pace_lookahead` for this account (default: the top-level value). Applies only with `weekly_pacing: true`. |
+| `accounts[].final_window` | how long before this account's weekly reset its final window opens: an integer and one unit `m`, `h` or `d`, for example `"12h"` (default: off; `"0m"` is off too). In the window the account ranks ahead of every priority tier and may use its weekly window up to `hard_limit`. Needs `weekly_pacing: true`. See "Rotation policy" and "Level 1: priority tiers". |
 | `bind` / `port` | address and port the proxy listens on (defaults `"127.0.0.1"` / 8484). The environment variable `CLAUDE_ROTATE_BIND` overrides `bind`, for a container that must listen on `0.0.0.0` whatever the mounted config says. Both need a restart. |
 | `reload_poll_s` | seconds between checks of `config.json` and the token files for changes, which are then reloaded (default 5; 0 = off, leaving `SIGHUP`). Needs a restart. See "Reloading the configuration". |
 | `switch_threshold` | 5h-window utilization that triggers rotation (default 0.8) |
@@ -568,6 +569,9 @@ weekly window under `switch_threshold_7d`; a window past its reset counts as
   fallback. If it is the active account it is left at once, with no cooldown or
   margin, and the switch is logged as `weekly_cap`. A manual
   `claude-rotate-admin rotate` onto such an account is left on its next reply.
+  `accounts[].final_window` raises the effective lookahead to the larger of
+  `pace_lookahead` and the window, so the allowance reaches the cap when the
+  window opens, never later than `pace_lookahead` alone would.
   With `weekly-pace`, a capped account's quota left is
   `weekly_cap − weekly utilization`.
 - If nothing is usable, the proxy waits on the account that can serve again
@@ -612,6 +616,22 @@ When a preferred account's window resets, traffic is pulled back automatically
 (`priority_recovery` in the events feed) after the cooldown; the backup is a
 spillway, not a new home. Accounts without a `priority` share one default tier,
 which is why Level 0 works unchanged.
+
+**Final window.** Set `accounts[].final_window` (for example `"12h"`, on an
+account with `weekly_pacing: true`) to burn a backup account's remaining weekly
+quota before it resets. From that long before the account's weekly reset until
+the reset, the account ranks ahead of every tier, as priority 0, and is used
+first. Its weekly threshold gives way to `hard_limit`, so it stays usable up to
+`hard_limit` in its weekly window, and the weekly part of the reserve rule
+follows the same limit. The 5h `switch_threshold` and its reserve rule, a
+disabled, dead or rejected account, and a flat `weekly_cap` still apply. Traffic
+moves onto the account after the cooldown (`final_window` in the events feed),
+and back to the normal tiers (`priority_recovery`) once the weekly window
+resets. The window also sets a floor for `pace_lookahead` on that account, so a
+longer window than the lookahead paces the account as if it were that much
+older. `/rotate/status` shows `final_window` and `in_final_window`, and
+`priority` stays the configured value. A configured `priority` of 0 ties with
+an account in its window, and a negative one outranks it.
 
 "Spent" means past a switch threshold, not at 100%. An account is usable while
 its 5h window is under `switch_threshold` and its weekly window is under
@@ -750,7 +770,7 @@ cp setup.sh config.example.json ./config/
   token still needs `docker compose up -d --force-recreate`, as above.
 - Every other setting is an edit to `./config/config.json`, loaded the same
   way: `disabled`, `priority`, `weight`, `weekly_cap`, `weekly_pacing`,
-  `pace_lookahead`, `private_to`, `public_url`, and removing a device or an
+  `pace_lookahead`, `final_window`, `private_to`, `public_url`, and removing a device or an
   account.
 
 #### Managing a container-only deployment
@@ -805,7 +825,7 @@ soonest 5h window reset. Check `recent_events` in `/rotate/status` for a
 **"Why did it switch accounts?"** Every switch is an event in
 `/rotate/status` → `recent_events` (and the panel's *Recent switches*), with a
 reason: `quota_exhausted`, `utilization>=<threshold>`, `consume_first`,
-`priority_recovery`, `account_disabled`, or `manual` (an operator ran
+`priority_recovery`, `final_window`, `account_disabled`, or `manual` (an operator ran
 `claude-rotate-admin rotate`). If you saw a 429 upstream but *no*
 switch, it was a per-minute burst and the proxy paced the same account on
 purpose (see [Rotation policy](#rotation-policy)).
@@ -987,6 +1007,7 @@ those taken from other forks.
 - Fixed [doxaras/claude-rotate#3](https://github.com/doxaras/claude-rotate/issues/3): the all-blocked fallback and the hold-until-reset wait rank accounts by when they can serve again, and a rejected account is never treated as usable on a stale reading.
 - Added a per-account weekly cap, `accounts[].weekly_cap`: the fraction of its weekly window an account may use, a flat maximum, so an account needed for other purposes, such as chat through the week, keeps quota back ([5ad787a](https://github.com/mrglrlgrlgrl/claude-rotate/commit/5ad787a), [18a4c3a](https://github.com/mrglrlgrlgrl/claude-rotate/commit/18a4c3a)).
 - Added per-account weekly pacing, `accounts[].weekly_pacing: true` (default `false`): the account's weekly allowance ramps up through the week to `weekly_cap`, or to the full week when no cap is set, and reaches it `pace_lookahead` before the weekly reset, so the account is not drained early ([18a4c3a](https://github.com/mrglrlgrlgrl/claude-rotate/commit/18a4c3a), [00d659c](https://github.com/mrglrlgrlgrl/claude-rotate/commit/00d659c)).
+- Added a per-account final window, `accounts[].final_window`: before its weekly reset, a paced account ranks ahead of every priority tier and may use its weekly window up to `hard_limit`, so a backup account burns its remaining quota before it resets.
 - `accounts[].private_to` names one or more devices that alone may use an account; within its priority tier they use it before the shared accounts. `--private-to` on `setup.sh add-account` and `claude-rotate-admin add-token` takes a comma list and writes `priority: 1` for a new account ([74d23ae](https://github.com/mrglrlgrlgrl/claude-rotate/commit/74d23ae), [3da39c2](https://github.com/mrglrlgrlgrl/claude-rotate/commit/3da39c2), [fec60f9](https://github.com/mrglrlgrlgrl/claude-rotate/commit/fec60f9), [af3fc70](https://github.com/mrglrlgrlgrl/claude-rotate/commit/af3fc70)).
 
 **Service and deployment**

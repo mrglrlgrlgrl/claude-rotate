@@ -136,6 +136,28 @@ def test_account_pace_lookahead_must_parse():
         _load_with({"accounts": [dict(ACCT[0], pace_lookahead=value)], "devices": devices})
 
 
+def test_account_final_window_must_parse_and_needs_weekly_pacing():
+    devices = {"laptop": "dev-laptop-a1b2c3"}
+    paced = dict(ACCT[0], weekly_pacing=True)
+    for value in ("-12h", "12", 12, "1.5h", "", None):
+        try:
+            _load_with({"accounts": [dict(paced, final_window=value)], "devices": devices})
+            raise AssertionError(f"final_window {value!r} must refuse startup")
+        except R.ConfigError as error:
+            assert "account 'a'" in str(error) and "final_window" in str(error), str(error)
+    for acct in (dict(ACCT[0]), dict(ACCT[0], weekly_pacing=False)):
+        try:
+            _load_with({"accounts": [dict(acct, final_window="12h")], "devices": devices})
+            raise AssertionError("final_window without weekly_pacing must refuse startup")
+        except R.ConfigError as error:
+            assert str(error) == "account 'a': final_window needs weekly_pacing: true", str(error)
+    for value in ("12h", "30m", "2d"):
+        _load_with({"accounts": [dict(paced, final_window=value)], "devices": devices})
+    _load_with({"accounts": [dict(paced, final_window="12h", pace_lookahead="2d")], "devices": devices})
+    for zero in ("0m", "0h", "0d"):
+        _load_with({"accounts": [dict(ACCT[0], final_window=zero)], "devices": devices})
+
+
 def test_account_cap_lookahead_is_refused_as_renamed():
     devices = {"laptop": "dev-laptop-a1b2c3"}
     want = "account 'a': cap_lookahead is renamed pace_lookahead: rename the key in config.json"
