@@ -631,7 +631,10 @@ resets. The window also sets a floor for `pace_lookahead` on that account, so a
 longer window than the lookahead paces the account as if it were that much
 older. `/rotate/status` shows `final_window` and `in_final_window`, and
 `priority` stays the configured value. A configured `priority` of 0 ties with
-an account in its window, and a negative one outranks it.
+an account in its window, and a negative one outranks it. `claude-rotate-admin
+set-account NAME --final-window 12h` sets the window and `--no-final-window`
+removes it. The admin refuses `--final-window` above zero without
+`weekly_pacing`, and `--no-weekly-pacing` while a window above zero is set.
 
 "Spent" means past a switch threshold, not at 100%. An account is usable while
 its 5h window is under `switch_threshold` and its weekly window is under
@@ -1013,7 +1016,7 @@ those taken from other forks.
 **Service and deployment**
 
 - Added hot config reload: `config.json` and the token files are reloaded when they change (polled every `reload_poll_s`) or on `SIGHUP`, an invalid file keeps the running config and is reported in `/rotate/status`, and `setup.sh` and `claude-rotate-admin` reload the service instead of restarting it ([4cf2fce](https://github.com/mrglrlgrlgrl/claude-rotate/commit/4cf2fce), [ca5344c](https://github.com/mrglrlgrlgrl/claude-rotate/commit/ca5344c), [19f8a27](https://github.com/mrglrlgrlgrl/claude-rotate/commit/19f8a27)).
-- Added `claude-rotate-admin set-account NAME`, which changes an account's `disabled`, `priority`, `weight`, `weekly_cap`, `weekly_pacing`, `pace_lookahead` and `private_to` without editing `config.json`, and `status` shows them ([280d62b](https://github.com/mrglrlgrlgrl/claude-rotate/commit/280d62b)).
+- Added `claude-rotate-admin set-account NAME`, which changes an account's `disabled`, `priority`, `weight`, `weekly_cap`, `weekly_pacing`, `pace_lookahead`, `final_window` and `private_to` without editing `config.json`, and `status` shows them ([280d62b](https://github.com/mrglrlgrlgrl/claude-rotate/commit/280d62b)).
 - Added `claude-rotate-admin menu`, a prompt-driven menu for selecting, adding, changing, re-tokening, activating and removing accounts, built on the same functions as the flag commands ([cd86d99](https://github.com/mrglrlgrlgrl/claude-rotate/commit/cd86d99)).
 - Added `CLAUDE_ROTATE_BIND`, which overrides `bind` ([35f4624](https://github.com/mrglrlgrlgrl/claude-rotate/commit/35f4624)).
 - Added a Docker image and compose example, published to GHCR for amd64 and arm64 ([fdcff28](https://github.com/mrglrlgrlgrl/claude-rotate/commit/fdcff28), [35da23e](https://github.com/mrglrlgrlgrl/claude-rotate/commit/35da23e)).

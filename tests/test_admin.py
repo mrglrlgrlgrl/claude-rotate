@@ -1363,7 +1363,51 @@ def test_set_account(f):
     assert (row["weight"], row["weekly_cap"], row["weekly_pacing"], row["pace_lookahead"],
             row["private_to"]) == (1, None, False, None, None)
     human = f.run("status").stdout
-    assert "weight 1, weekly_cap none, weekly_pacing off, pace_lookahead default, private_to none" in human
+    assert ("weight 1, weekly_cap none, weekly_pacing off, pace_lookahead default, final_window off, "
+            "private_to none") in human
+    assert row["final_window"] is None
+    # final_window: set, show in status, remove; bad values and a missing weekly_pacing are refused.
+    assert set_ok("--weekly-pacing", "--final-window", "12h")["final_window"] == "12h"
+    row = next(x for x in json.loads(f.run("status", "--json").stdout)["accounts"] if x["name"] == "sa")
+    assert row["final_window"] == "12h"
+    assert "weekly_pacing on, pace_lookahead default, final_window 12h, private_to none" in f.run("status").stdout
+    assert "final_window" not in set_ok("--no-final-window")
+    assert acct()["weekly_pacing"] is True
+    before = f.config.read_bytes()
+    for flags, message in ((("--final-window=-12h",), "final_window must be an integer and one unit"),
+                           (("--final-window", "12"), "final_window must be an integer and one unit"),
+                           (("--final-window", "12x"), "final_window must be an integer and one unit")):
+        r = f.run("set-account", "sa", *flags, "--no-restart")
+        assert r.returncode == 1 and message in r.stderr, (flags, r)
+        assert f.config.read_bytes() == before, flags
+    r = f.run("set-account", "sa", "--final-window", "-12h", "--no-restart")
+    assert r.returncode != 0 and f.config.read_bytes() == before, r
+    # The weekly_pacing rules mirror the proxy's load check.
+    set_ok("--no-weekly-pacing")
+    before = f.config.read_bytes()
+    r = f.run("set-account", "sa", "--final-window", "12h", "--no-restart")
+    assert r.returncode == 1 and "final_window needs weekly_pacing: true" in r.stderr, r
+    assert f.config.read_bytes() == before
+    a = set_ok("--final-window", "12h", "--weekly-pacing")
+    assert (a["final_window"], a["weekly_pacing"]) == ("12h", True)
+    before = f.config.read_bytes()
+    r = f.run("set-account", "sa", "--no-weekly-pacing", "--no-restart")
+    assert r.returncode == 1 and "final_window needs weekly_pacing: true" in r.stderr, r
+    assert f.config.read_bytes() == before
+    a = set_ok("--no-weekly-pacing", "--no-final-window")
+    assert "weekly_pacing" not in a and "final_window" not in a
+    # "0m" is accepted on an unpaced account, and --no-weekly-pacing then succeeds.
+    assert set_ok("--final-window", "0m")["final_window"] == "0m"
+    set_ok("--weekly-pacing")
+    assert set_ok("--no-weekly-pacing")["final_window"] == "0m"
+    set_ok("--no-final-window")
+    # It coexists with pace_lookahead in both directions.
+    set_ok("--weekly-pacing", "--pace-lookahead", "3h")
+    a = set_ok("--final-window", "12h")
+    assert (a["final_window"], a["pace_lookahead"]) == ("12h", "3h")
+    assert set_ok("--pace-lookahead", "6h")["final_window"] == "12h"
+    assert "pace_lookahead" not in set_ok("--no-pace-lookahead") and acct()["final_window"] == "12h"
+    set_ok("--no-final-window", "--no-weekly-pacing")
 
 
 def test_menu(f):
@@ -1388,6 +1432,15 @@ def test_menu(f):
     # A valid value goes through the shared code.
     r = f.run("menu", input="1\nmn\n1\n5\n0.5\n3\n")
     assert r.returncode == 0 and acct("mn")["weekly_cap"] == 0.5, r
+    # The final window is set and cleared through the menu (item 8); the table shows it.
+    f.run("set-account", "mn", "--weekly-pacing", "--no-restart")
+    r = f.run("menu", input="1\nmn\n1\n8\n12h\n3\n")
+    assert r.returncode == 0 and acct("mn")["final_window"] == "12h", r
+    assert "final_window 12h" in r.stdout, r.stdout
+    r = f.run("menu", input="1\nmn\n1\n8\nnone\n3\n")
+    assert r.returncode == 0 and "final_window" not in acct("mn"), r
+    assert "final_window off" in r.stdout, r.stdout
+    f.run("set-account", "mn", "--no-weekly-pacing", "--no-restart")
     # Remove with a wrong name changes nothing; with the right name the account and token are gone.
     before = f.config.read_bytes()
     r = f.run("menu", input="1\nmn\n4\nnope\n3\n")

@@ -785,7 +785,25 @@ def set_account_changes(args) -> dict:
         changes["pace_lookahead"] = args.pace_lookahead
     if args.no_pace_lookahead:
         changes["pace_lookahead"] = None
+    if args.final_window is not None:
+        if not re.fullmatch(r"\d+[mhd]", args.final_window):
+            raise Refused(f"account '{name}': final_window must be an integer and "
+                          "one unit m, h or d, for example \"12h\"")
+        changes["final_window"] = args.final_window
+    if args.no_final_window:
+        changes["final_window"] = None
     return changes
+
+
+def check_final_window(name: str, acct: dict, changes: dict):
+    """Refuse a change that leaves final_window above zero without weekly_pacing, which
+    the proxy refuses to load. Only a call that touches either key is checked."""
+    if "final_window" not in changes and "weekly_pacing" not in changes:
+        return
+    window = acct.get("final_window")
+    if isinstance(window, str) and re.fullmatch(r"\d+[mhd]", window) and int(window[:-1]) and not acct.get("weekly_pacing"):
+        raise Refused(f"account '{name}': final_window needs weekly_pacing: true; "
+                      "nothing changed")
 
 
 def cmd_set_account(args) -> int:
@@ -812,6 +830,7 @@ def cmd_set_account(args) -> int:
                 acct.pop(key, None)
             else:
                 acct[key] = value
+        check_final_window(args.name, acct, changes)
         if args.private_to is not None:
             set_private(acct, args.private_to)
         if args.shared:
@@ -1120,6 +1139,7 @@ def collect_status():
             "name": acct["name"], "disabled": bool(acct.get("disabled")), "priority": acct.get("priority", 100),
             "weight": acct.get("weight", 1), "weekly_cap": acct.get("weekly_cap"),
             "weekly_pacing": acct.get("weekly_pacing", False), "pace_lookahead": acct.get("pace_lookahead"),
+            "final_window": acct.get("final_window"),
             "private_to": acct.get("private_to"),
             "token_file": acct.get("token_file"), "token_file_present": status["present"],
             "token_file_bytes": status.get("bytes"), "token_file_mode": status.get("mode"),
@@ -1202,7 +1222,8 @@ def cmd_status(args) -> int:
         out(f"  {acct['name']}: priority {acct['priority']}, weight {acct['weight']}, "
             f"weekly_cap {acct['weekly_cap'] if acct['weekly_cap'] is not None else 'none'}, "
             f"weekly_pacing {'on' if acct['weekly_pacing'] else 'off'}, "
-            f"pace_lookahead {acct['pace_lookahead'] or 'default'}, private_to {private or 'none'}")
+            f"pace_lookahead {acct['pace_lookahead'] or 'default'}, "
+            f"final_window {acct['final_window'] or 'off'}, private_to {private or 'none'}")
         out(f"    {token}; 5h {acct['util_5h']:.0%}, 7d {acct['util_7d']:.0%}; "
             f"last seen {fmt_time(acct['last_seen'])}; upstream status {acct['upstream_status'] or 'n/a'}"
             + (f" [{', '.join(flags)}]" if flags else ""))
@@ -1240,7 +1261,8 @@ class EndOfInput(Exception):
 
 SET_ACCOUNT_DEFAULTS = dict(disable=False, enable=False, priority=None, weight=None, weekly_cap=None,
                             no_weekly_cap=False, weekly_pacing=False, no_weekly_pacing=False,
-                            pace_lookahead=None, no_pace_lookahead=False, private_to=None, shared=False,
+                            pace_lookahead=None, no_pace_lookahead=False, final_window=None,
+                            no_final_window=False, private_to=None, shared=False,
                             no_restart=False)
 
 
@@ -1277,7 +1299,8 @@ def print_account_table(report: dict):
             f"weight {acct['weight']}, "
             f"weekly_cap {acct['weekly_cap'] if acct['weekly_cap'] is not None else 'none'}, "
             f"weekly_pacing {'on' if acct['weekly_pacing'] else 'off'}, "
-            f"pace_lookahead {acct['pace_lookahead'] or 'default'}, private_to {private or 'none'}, "
+            f"pace_lookahead {acct['pace_lookahead'] or 'default'}, "
+            f"final_window {acct['final_window'] or 'off'}, private_to {private or 'none'}, "
             f"5h {acct['util_5h']:.0%}, 7d {acct['util_7d']:.0%}, "
             f"token file {'present' if acct['token_file_present'] else 'MISSING'}")
 
@@ -1303,7 +1326,7 @@ def confirm_by_name(name: str, what: str) -> bool:
 
 def menu_set_account(name: str):
     labels = ["disable", "enable", "priority", "weight", "weekly cap", "weekly pacing", "pace lookahead",
-              "private to", "back"]
+              "final window", "private to", "back"]
     index = choose(f"settings for '{name}':", labels)
     if index is None or labels[index] == "back":
         return
@@ -1331,6 +1354,12 @@ def menu_set_account(name: str):
             changes["no_pace_lookahead"] = True
         else:
             changes["pace_lookahead"] = value
+    elif label == "final window":
+        value = ask("final window (an integer and one unit m, h or d, or none): ")
+        if value == "none":
+            changes["no_final_window"] = True
+        else:
+            changes["final_window"] = value
     else:
         value = ask("devices, comma separated, or shared: ")
         if value == "shared":
@@ -1452,6 +1481,10 @@ def build_parser():
     g = p.add_mutually_exclusive_group()
     g.add_argument("--pace-lookahead", metavar="D", help="an integer and one unit m, h or d, for example 12h")
     g.add_argument("--no-pace-lookahead", action="store_true", help="remove pace_lookahead")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--final-window", metavar="D",
+                   help="an integer and one unit m, h or d, for example 12h; needs weekly_pacing")
+    g.add_argument("--no-final-window", action="store_true", help="remove final_window")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--private-to", metavar="DEVICE[,DEVICE...]", type=lambda v: v.split(","),
                    help="reserve the account for these registered devices; writes priority 1 if it has none")
